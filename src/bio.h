@@ -43,9 +43,9 @@ void bioCreateFsyncJob(int fd);
 void bioCreateLazyFreeJob(lazy_free_fn free_fn, int arg_count, ...);
 
 /* Background job opcodes */
-#define BIO_CLOSE_FILE    0 /* Deferred close(2) syscall. */
-#define BIO_AOF_FSYNC     1 /* Deferred AOF fsync. */
-#define BIO_LAZY_FREE     2 /* Deferred objects freeing. */
-#define BIO_NUM_OPS       3
+#define BIO_CLOSE_FILE    0 /* Deferred close(2) syscall. 文件关闭*/
+#define BIO_AOF_FSYNC     1 /* Deferred AOF fsync. AOF刷盘*/
+#define BIO_LAZY_FREE     2 /* Deferred objects freeing. 释放对象*/
+#define BIO_NUM_OPS       3 // BIO 后台操作类型总数
 
 #endif

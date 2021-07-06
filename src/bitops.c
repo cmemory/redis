@@ -37,6 +37,10 @@
 /* Count number of bits set in the binary array pointed by 's' and long
  * 'count' bytes. The implementation of this function is required to
  * work with an input string length up to 512 MB or more (server.proto_max_bulk_len) */
+// 计算s指向的count长度的字符串中，有多少位设置为1。这个函数的实现要求能处理512MB长或则更长（取决于proto_max_bulk_len设置）的字符串。
+// https://blog.csdn.net/weixin_34396902/article/details/88797827
+// https://www.cnblogs.com/graphics/archive/2010/06/21/1752421.html
+// http://graphics.stanford.edu/~seander/bithacks.html
 size_t redisPopcount(void *s, long count) {
     size_t bits = 0;
     unsigned char *p = s;

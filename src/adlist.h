@@ -33,17 +33,21 @@
 
 /* Node, List, and Iterator are the only data structures used currently. */
 
+// 链表节点，包含双向指针和值
 typedef struct listNode {
     struct listNode *prev;
     struct listNode *next;
     void *value;
 } listNode;
 
+// 链表迭代器，包含下一个访问的节点和访问方向标识。
+// 因为迭代器中指向下一个访问节点，所以迭代处理时对于当前访问的节点可以做删除操作。
 typedef struct listIter {
     listNode *next;
     int direction;
 } listIter;
 
+// 链表结构，包含指向头、尾节点的指针。链表长度。3个链表元素处理函数（复制、比对、释放）。
 typedef struct list {
     listNode *head;
     listNode *tail;

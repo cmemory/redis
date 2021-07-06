@@ -41,6 +41,7 @@
 
 const char *SDS_NOINIT = "SDS_NOINIT";
 
+// 返回不同type结构的header大小
 static inline int sdsHdrSize(char type) {
     switch(type&SDS_TYPE_MASK) {
         case SDS_TYPE_5:
@@ -57,6 +58,7 @@ static inline int sdsHdrSize(char type) {
     return 0;
 }
 
+// 根据请求字符串的长度，选择合适的类型存储
 static inline char sdsReqType(size_t string_size) {
     if (string_size < 1<<5)
         return SDS_TYPE_5;
@@ -106,27 +108,35 @@ sds _sdsnewlen(const void *init, size_t initlen, int trymalloc) {
     char type = sdsReqType(initlen);
     /* Empty strings are usually created in order to append. Use type 8
      * since type 5 is not good at this. */
+    // 创建空字符串sds时，直接使用type8
     if (type == SDS_TYPE_5 && initlen == 0) type = SDS_TYPE_8;
     int hdrlen = sdsHdrSize(type);
     unsigned char *fp; /* flags pointer. */
     size_t usable;
 
     assert(initlen + hdrlen + 1 > initlen); /* Catch size_t overflow */
+    // 分配内存，头（hdrlen） + 字符串长度（initlen） + 结束空字符串（1）
     sh = trymalloc?
         s_trymalloc_usable(hdrlen+initlen+1, &usable) :
         s_malloc_usable(hdrlen+initlen+1, &usable);
     if (sh == NULL) return NULL;
+    // 是否初始化，后续memcpy初始化buf
     if (init==SDS_NOINIT)
         init = NULL;
     else if (!init)
         memset(sh, 0, hdrlen+initlen+1);
+    if (sh == NULL) return NULL;
+    // 定位到sds中的buf
     s = (char*)sh+hdrlen;
+    // 定位到sds中的flags
     fp = ((unsigned char*)s)-1;
     usable = usable-hdrlen-1;
     if (usable > sdsTypeMaxSize(type))
         usable = sdsTypeMaxSize(type);
+    // 初始化结构
     switch(type) {
         case SDS_TYPE_5: {
+            // 设置flags（长度）
             *fp = type | (initlen << SDS_TYPE_BITS);
             break;
         }
@@ -159,8 +169,10 @@ sds _sdsnewlen(const void *init, size_t initlen, int trymalloc) {
             break;
         }
     }
+    // 初始化buf
     if (initlen && init)
         memcpy(s, init, initlen);
+    // 设置结束字符
     s[initlen] = '\0';
     return s;
 }
@@ -193,6 +205,7 @@ sds sdsdup(const sds s) {
 /* Free an sds string. No operation is performed if 's' is NULL. */
 void sdsfree(sds s) {
     if (s == NULL) return;
+    // 定位到sds结构首位，从而释放整个sds空间
     s_free((char*)s-sdsHdrSize(s[-1]));
 }
 
@@ -210,6 +223,7 @@ void sdsfree(sds s) {
  * The output will be "2", but if we comment out the call to sdsupdatelen()
  * the output will be "6" as the string was modified but the logical length
  * remains 6 bytes. */
+// 以c字符串格式来更新sds字符串长度
 void sdsupdatelen(sds s) {
     size_t reallen = strlen(s);
     sdssetlen(s, reallen);
@@ -220,6 +234,7 @@ void sdsupdatelen(sds s) {
  * so that next append operations will not require allocations up to the
  * number of bytes previously available. */
 void sdsclear(sds s) {
+    // sds的len置为0，字符串只有结束字符
     sdssetlen(s, 0);
     s[0] = '\0';
 }
@@ -231,6 +246,7 @@ void sdsclear(sds s) {
  * Note: this does not change the *length* of the sds string as returned
  * by sdslen(), but only the free buffer space we have. */
 sds sdsMakeRoomFor(sds s, size_t addlen) {
+    // 增加sds可用空间
     void *sh, *newsh;
     size_t avail = sdsavail(s);
     size_t len, newlen;
@@ -243,6 +259,7 @@ sds sdsMakeRoomFor(sds s, size_t addlen) {
 
     len = sdslen(s);
     sh = (char*)s-sdsHdrSize(oldtype);
+    // 计算新的总长度，新的存储类型
     newlen = (len+addlen);
     assert(newlen > len);   /* Catch size_t overflow */
     if (newlen < SDS_MAX_PREALLOC)
@@ -259,6 +276,7 @@ sds sdsMakeRoomFor(sds s, size_t addlen) {
 
     hdrlen = sdsHdrSize(type);
     assert(hdrlen + newlen + 1 > len);  /* Catch size_t overflow */
+    // realloc 或 malloc申请空间，处理数据迁移
     if (oldtype==type) {
         newsh = s_realloc_usable(sh, hdrlen+newlen+1, &usable);
         if (newsh == NULL) return NULL;
@@ -277,6 +295,7 @@ sds sdsMakeRoomFor(sds s, size_t addlen) {
     usable = usable-hdrlen-1;
     if (usable > sdsTypeMaxSize(type))
         usable = sdsTypeMaxSize(type);
+    // 设置新的alloc长度
     sdssetalloc(s, usable);
     return s;
 }
@@ -491,6 +510,7 @@ int sdsll2str(char *s, long long value) {
      * a reversed string. */
     v = (value < 0) ? -value : value;
     p = s;
+    // 从最后一位开始，+ '0' 转为数字对应字符
     do {
         *p++ = '0'+(v%10);
         v /= 10;
@@ -744,6 +764,7 @@ sds sdscatfmt(sds s, char const *fmt, ...) {
  *
  * Output will be just "HelloWorld".
  */
+// "abc" 移除 "ac"
 sds sdstrim(sds s, const char *cset) {
     char *start, *end, *sp, *ep;
     size_t len;
@@ -797,6 +818,7 @@ void sdsrange(sds s, ssize_t start, ssize_t end) {
         }
     }
     if (start && newlen) memmove(s, s+start, newlen);
+    // 这里为什么是0，而不是"\0"
     s[newlen] = 0;
     sdssetlen(s,newlen);
 }
@@ -879,15 +901,20 @@ sds *sdssplitlen(const char *s, ssize_t len, const char *sep, int seplen, int *c
             tokens = newtokens;
         }
         /* search the separator */
+        // 找到第一个与sep匹配的字符串首位，j为相对于偏移量
         if ((seplen == 1 && *(s+j) == sep[0]) || (memcmp(s+j,sep,seplen) == 0)) {
+            // 匹配项前面的字符串作为token存储。token相对于s的偏移量为start，j-start为token的长度
             tokens[elements] = sdsnewlen(s+start,j-start);
             if (tokens[elements] == NULL) goto cleanup;
+            // 跳过sep字符串，更新elements，start
             elements++;
             start = j+seplen;
+            // 为什么还要-1？  这里-1，是因为for循环结束有自动+1操作
             j = j+seplen-1; /* skip the separator */
         }
     }
     /* Add the final element. We are sure there is room in the tokens array. */
+    // 如果字符串最后恰好是一个分隔字符串，最后会有一个空字符串？
     tokens[elements] = sdsnewlen(s+start,len-start);
     if (tokens[elements] == NULL) goto cleanup;
     elements++;

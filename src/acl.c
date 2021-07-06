@@ -362,9 +362,12 @@ void ACLFreeUsersSet(rax *users) {
  * so that user->allowed_commands[word]&bit will identify that specific
  * bit. The function returns C_ERR in case the specified ID overflows
  * the bitmap in the user representation. */
+// 获取命令id在bitmap中的坐标。
 int ACLGetCommandBitCoordinates(uint64_t id, uint64_t *word, uint64_t *bit) {
     if (id >= USER_COMMAND_BITS_COUNT) return C_ERR;
+    // 先找到allowed_commands中元素位置。
     *word = id / sizeof(uint64_t) / 8;
+    // 再找对应元素中的bit位。
     *bit = 1ULL << (id % (sizeof(uint64_t) * 8));
     return C_OK;
 }
@@ -376,9 +379,13 @@ int ACLGetCommandBitCoordinates(uint64_t id, uint64_t *word, uint64_t *bit) {
  *
  * If the bit overflows the user internal representation, zero is returned
  * in order to disallow the execution of the command in such edge case. */
+// 这个函数只处理bitmap中bit位指代的是否可执行，不处理ALLCOMMANDS标识。
+// 返回0表示不可执行，1表示可执行。如果id超出了bitmap索引，返回0
 int ACLGetUserCommandBit(user *u, unsigned long id) {
     uint64_t word, bit;
+    // 获取id映射到allowed_commands数组上的元素（word）以及元素中的位置（bit）。
     if (ACLGetCommandBitCoordinates(id,&word,&bit) == C_ERR) return 0;
+    // 判断对应位置是否为1
     return (u->allowed_commands[word] & bit) != 0;
 }
 
@@ -394,13 +401,19 @@ int ACLUserCanExecuteFutureCommands(user *u) {
  * is performed. As a side effect of calling this function with a value of
  * zero, the user flag ALLCOMMANDS is cleared since it is no longer possible
  * to skip the command bit explicit test. */
+// 设置指定user的命令bitmap的指定命令位为0或1。
+// 如果指定id超过了最大长度长度，则什么都不做直接返回。
+// 如果指定设置某命令位为0成功，则该user的ALLCOMMANDS标识将被移除，可能无法再直接跳过bitmap检测了。
 void ACLSetUserCommandBit(user *u, unsigned long id, int value) {
     uint64_t word, bit;
+    // 找出指定对应的位，allowed_commands数组的第几（word）个元素的第几（bit）位。
     if (ACLGetCommandBitCoordinates(id,&word,&bit) == C_ERR) return;
+    // 设置对应位置为新值
     if (value) {
         u->allowed_commands[word] |= bit;
     } else {
         u->allowed_commands[word] &= ~bit;
+        // 移除ALLCOMMANDS标识
         u->flags &= ~USER_FLAG_ALLCOMMANDS;
     }
 }
@@ -1125,20 +1138,28 @@ int ACLAuthenticateUser(client *c, robj *username, robj *password) {
  * creates such an ID: it uses sequential IDs, reusing the same ID for the same
  * command name, so that a command retains the same ID in case of modules that
  * are unloaded and later reloaded. */
+// 为了ACL控制，每个用户都有一个基于命令的bitmap，用于标识对应的命令是否可执行。
+// 为了生成这个bitmap，每个command都应该有一个ID作为bitmap的索引。
+// 这个函数用于创建这样的id，顺序的产生id，相同的命令name重复使用相同的id，保证一致性。
 unsigned long ACLGetCommandID(const char *cmdname) {
 
     sds lowername = sdsnew(cmdname);
     sdstolower(lowername);
+    // commandId，command name -> id的映射表，使用rax基数树存储。
     if (commandId == NULL) commandId = raxNew();
+    // 根据命令那么查找id
     void *id = raxFind(commandId,(unsigned char*)lowername,sdslen(lowername));
     if (id != raxNotFound) {
         sdsfree(lowername);
+        // 找到就返回
         return (unsigned long)id;
     }
+    // 没找到，使用传入的name，构造新的节点插入rax
     raxInsert(commandId,(unsigned char*)lowername,strlen(lowername),
               (void*)nextid,NULL);
     sdsfree(lowername);
     unsigned long thisid = nextid;
+    // 全局nextid+1
     nextid++;
 
     /* We never assign the last bit in the user commands bitmap structure,
@@ -1149,11 +1170,15 @@ unsigned long ACLGetCommandID(const char *cmdname) {
      * and command categories from scratch, not allowing future commands by
      * default (loaded via modules). This is useful when rewriting the ACLs
      * with ACL SAVE. */
+    // 不使用bitmap最后一个位，保留一个位用于+@all标识，标识是否可以允许future commands，如从module中加载的命令？
+    // 理论上说这里命令数量会大于USER_COMMAND_BITS_COUNT么？
     if (nextid == USER_COMMAND_BITS_COUNT-1) nextid++;
+    // 返回传入name对应的id
     return thisid;
 }
 
 /* Clear command id table and reset nextid to 0. */
+// 清除命令name->id的列表（rax）。置nextid为0
 void ACLClearCommandID(void) {
     if (commandId) raxFree(commandId);
     commandId = NULL;
@@ -1161,6 +1186,7 @@ void ACLClearCommandID(void) {
 }
 
 /* Return an username by its name, or NULL if the user does not exist. */
+// 根据name查询user返回。name->user的映射也是rax存储的。
 user *ACLGetUserByName(const char *name, size_t namelen) {
     void *myuser = raxFind(Users,(unsigned char*)name,namelen);
     if (myuser == raxNotFound) return NULL;
@@ -1176,21 +1202,31 @@ user *ACLGetUserByName(const char *name, size_t namelen) {
  * command cannot be executed because the user is not allowed to run such
  * command, the second if the command is denied because the user is trying
  * to access keys that are not among the specified patterns. */
+// 检查clinet关联的user是否能够执行当前命令。使用用户关联的ACL来判断。
+// 能执行则返回ok，否则会返回ACL_DENIED_CMD 和 ACL_DENIED_KEY。
+// 前者说明该user不能执行该命令，后者说明该user不能访问这个key。
 int ACLCheckCommandPerm(client *c, int *keyidxptr) {
     user *u = c->user;
     uint64_t id = c->cmd->id;
 
     /* If there is no associated user, the connection can run anything. */
+    // 如果client没有关联的user，则认为可以执行任何命令。
     if (u == NULL) return ACL_OK;
 
     /* Check if the user can execute this command or if the command
      * doesn't need to be authenticated (hello, auth). */
+    // 如果用户需要ACL check 命令，且命令执行需要用户认证，则会进入if逻辑。
+    // 而如果user有"all commands"标识，或者命令不需要认证，显然可以直接执行命令，不需要进行处理。
     if (!(u->flags & USER_FLAG_ALLCOMMANDS) && !(c->cmd->flags & CMD_NO_AUTH))
     {
         /* If the bit is not set we have to check further, in case the
          * command is allowed just with that specific subcommand. */
+        // 如果命令对应的bit为1，显然可以执行，则不需要处理。
+        // 如果对应bit为0，则还需要进一步check指定的子命令。
         if (ACLGetUserCommandBit(u,id) == 0) {
             /* Check if the subcommand matches. */
+            // 如果当前执行的命令没有子命令，母命令bit设置为0，返回denied cmd。
+            // 第一个条件表示client执行没有传子命令（即只执行母命令？），后两个条件表示系统中预设的该命令没有子命令。
             if (c->argc < 2 ||
                 u->allowed_subcommands == NULL ||
                 u->allowed_subcommands[id] == NULL)
@@ -1198,10 +1234,13 @@ int ACLCheckCommandPerm(client *c, int *keyidxptr) {
                 return ACL_DENIED_CMD;
             }
 
+            // 如果有子命令，需要遍历对应子命令列表，检查是否有匹配项。
             long subid = 0;
             while (1) {
+                // 子命令数组是以NULL结尾的。这里遍历到NULL，说明处理完了还没找到，返回denied cmd。
                 if (u->allowed_subcommands[id][subid] == NULL)
                     return ACL_DENIED_CMD;
+                // 不为NULL时，比对是否匹配。匹配则跳出循环，命令检查通过。
                 if (!strcasecmp(c->argv[1]->ptr,
                                 u->allowed_subcommands[id][subid]))
                     break; /* Subcommand match found. Stop here. */
@@ -1212,23 +1251,30 @@ int ACLCheckCommandPerm(client *c, int *keyidxptr) {
 
     /* Check if the user can execute commands explicitly touching the keys
      * mentioned in the command arguments. */
+    // 同前面。
+    // 如果用户需要ACL check key，且命令有key（firstkey不为0或有getkey的函数），就需要执行if逻辑。
+    // 反之，如果有allkeys标识（标识可以处理任何key），或者命令没有key，都不需要进行检查处理。
     if (!(c->user->flags & USER_FLAG_ALLKEYS) &&
         (c->cmd->getkeys_proc || c->cmd->firstkey))
     {
         getKeysResult result = GETKEYS_RESULT_INIT;
+        // 从命令中获取keys
         int numkeys = getKeysFromCommand(c->cmd,c->argv,c->argc,&result);
         int *keyidx = result.keys;
+        // 遍历这些key进行处理
         for (int j = 0; j < numkeys; j++) {
             listIter li;
             listNode *ln;
             listRewind(u->patterns,&li);
 
             /* Test this key against every pattern. */
+            // 对于每个key，遍历patterns列表，挨个比对处理。
             int match = 0;
             while((ln = listNext(&li))) {
                 sds pattern = listNodeValue(ln);
                 size_t plen = sdslen(pattern);
                 int idx = keyidx[j];
+                // 模式匹配处理
                 if (stringmatchlen(pattern,plen,c->argv[idx]->ptr,
                                    sdslen(c->argv[idx]->ptr),0))
                 {
@@ -1237,6 +1283,8 @@ int ACLCheckCommandPerm(client *c, int *keyidxptr) {
                 }
             }
             if (!match) {
+                // 遍历完了，都没有匹配，则返回denied key
+                // 使用keyidxptr，记录当前处理的那个key才参数中的index返回，表示这里的这个key不被允许执行。
                 if (keyidxptr) *keyidxptr = keyidx[j];
                 getKeysFreeResult(&result);
                 return ACL_DENIED_KEY;
@@ -1247,23 +1295,28 @@ int ACLCheckCommandPerm(client *c, int *keyidxptr) {
 
     /* If we survived all the above checks, the user can execute the
      * command. */
+    // 如果不需要检查，或检查了没问题，则返回ok表示可以执行。
     return ACL_OK;
 }
 
 /* Check if the provided channel is whitelisted by the given allowed channels
  * list. Glob-style pattern matching is employed, unless the literal flag is
  * set. Returns ACL_OK if access is granted or ACL_DENIED_CHANNEL otherwise. */
+// user处理channel白名单匹配。literal标识是否pattern模式。
 int ACLCheckPubsubChannelPerm(sds channel, list *allowed, int literal) {
     listIter li;
     listNode *ln;
     size_t clen = sdslen(channel);
     int match = 0;
 
+    // 遍历所有user允许的channel pattern，挨个与传入的channel或pattern匹配处理。
     listRewind(allowed,&li);
     while((ln = listNext(&li))) {
         sds pattern = listNodeValue(ln);
         size_t plen = sdslen(pattern);
 
+        // 如果是pattern模式，传入的channel需要与允许的pattern完全一致才行。
+        // 如果不是pattern模式，需要看白名单的pattern能否匹配传入的channel。
         if ((literal && !sdscmp(pattern,channel)) || 
             (!literal && stringmatchlen(pattern,plen,channel,clen,0)))
         {
@@ -1271,6 +1324,7 @@ int ACLCheckPubsubChannelPerm(sds channel, list *allowed, int literal) {
             break;
         }
     }
+    // 如果传入channel与白名单的所有pattern都不能匹配，返回denied channel。否则返回ok
     if (!match) {
         return ACL_DENIED_CHANNEL;
     }
@@ -1279,6 +1333,8 @@ int ACLCheckPubsubChannelPerm(sds channel, list *allowed, int literal) {
 
 /* Check if the user's existing pub/sub clients violate the ACL pub/sub
  * permissions specified via the upcoming argument, and kill them if so. */
+// 如果某个用户的pub/sub channel的允许权限变更了。
+// 这个函数用于变更处理，需要的话会kill用户的pub/sub client。
 void ACLKillPubsubClientsIfNeeded(user *u, list *upcoming) {
     listIter li, lpi;
     listNode *ln, *lpn;
@@ -1287,32 +1343,43 @@ void ACLKillPubsubClientsIfNeeded(user *u, list *upcoming) {
     
     /* Nothing to kill when the upcoming are a literal super set of the original
      * permissions. */
+    // 遍历用户的原来配置的允许channel列表，挨个与新修改的channel列表进行匹配。
+    // 如果老的模式每一个都能匹配上新的模式，显然新的模式包含的更广，所有不需要kill处理，直接返回。
     listRewind(u->channels,&li);
     while (!kill && ((ln = listNext(&li)) != NULL)) {
         sds pattern = listNodeValue(ln);
+        // 挨个与新的channel pattern列表匹配。
         kill = (ACLCheckPubsubChannelPerm(pattern,upcoming,1) ==
                 ACL_DENIED_CHANNEL);
     }
+    // 不需要处理，直接返回
     if (!kill) return;
 
     /* Scan all connected clients to find the user's pub/subs. */
+    // 遍历所有已连接的clinet，找到当前用户的pub/subs进行处理。
     listRewind(server.clients,&li);
     while ((ln = listNext(&li)) != NULL) {
         client *c = listNodeValue(ln);
         kill = 0;
 
+        // 只有client关联的用户是当前用户，且client是pubsub类型时才处理。
         if (c->user == u && getClientType(c) == CLIENT_TYPE_PUBSUB) {
             /* Check for pattern violations. */
+            // 遍历这个client监听的pubsub patterns，看是否都能被新的模式列表所匹配。
             listRewind(c->pubsub_patterns,&lpi);
             while (!kill && ((lpn = listNext(&lpi)) != NULL)) {
                 o = lpn->value;
+                // client监听的patterns，挨个与新的upcoming模式列表匹配。
+                // 如果有一个不能匹配上，则本连接需要kill掉，跳出循环处理kill。
                 kill = (ACLCheckPubsubChannelPerm(o->ptr,upcoming,1) == 
                         ACL_DENIED_CHANNEL);
             }
             /* Check for channel violations. */
+            // 如果订阅的pattern都能匹配新的模式，这里再检查订阅的channel（非pattern）。
             if (!kill) {
                 dictIterator *di = dictGetIterator(c->pubsub_channels);
-                dictEntry *de;                
+                dictEntry *de;
+                // 同样挨个遍历判断处理。有一个不匹配就跳出循环。
                 while (!kill && ((de = dictNext(di)) != NULL)) {
                     o = dictGetKey(de);
                     kill = (ACLCheckPubsubChannelPerm(o->ptr,upcoming,0) ==
@@ -1322,6 +1389,7 @@ void ACLKillPubsubClientsIfNeeded(user *u, list *upcoming) {
             }
 
             /* Kill it. */
+            // 如果因为订阅模式改变，需要kill掉client，这里立即free掉。
             if (kill) {
                 freeClient(c);
             }
@@ -1339,16 +1407,25 @@ void ACLKillPubsubClientsIfNeeded(user *u, list *upcoming) {
  *
  * If the user can execute the command ACL_OK is returned, otherwise 
  * ACL_DENIED_CHANNEL. */
+// 检查当前client关联user的ACL是否允许pub/sub处理对应的channel。
+// idx和count用于定位命令中的所有channel参数。
+// literal用于指示channel参数是字符串值，还是模式pattern。
+// idxptr用于返回，不允许处理的channel参数的位置。
+// 如果所有channel都能处理，返回ok，否则返回ACL_DENIED_CHANNEL
 int ACLCheckPubsubPerm(client *c, int idx, int count, int literal, int *idxptr) {
     user *u = c->user;
 
     /* If there is no associated user, the connection can run anything. */
+    // 没有关联的user，直接返回ok
     if (u == NULL) return ACL_OK;
 
     /* Check if the user can access the channels mentioned in the command's
      * arguments. */
+    // 不是ALLCHANNELS标识，需要进行check。
     if (!(c->user->flags & USER_FLAG_ALLCHANNELS)) {
+        // 遍历参数中的channel进行处理
         for (int j = idx; j < idx+count; j++) {
+            // check，如果某个channel参数不被允许操作，标记不允许的参数位置，返回denied channel。
             if (ACLCheckPubsubChannelPerm(c->argv[j]->ptr,u->channels,literal)
                 != ACL_OK) {
                 if (idxptr) *idxptr = j;
@@ -1359,6 +1436,7 @@ int ACLCheckPubsubPerm(client *c, int idx, int count, int literal, int *idxptr) 
 
     /* If we survived all the above checks, the user can execute the
      * command. */
+    // check完了都允许，返回ok
     return ACL_OK;
 
 }
@@ -1366,15 +1444,21 @@ int ACLCheckPubsubPerm(client *c, int idx, int count, int literal, int *idxptr) 
 /* Check whether the command is ready to be exceuted by ACLCheckCommandPerm.
  * If check passes, then check whether pub/sub channels of the command is
  * ready to be executed by ACLCheckPubsubPerm */
+// 先检查命令是否可执行，再检查命令中是否可处理PUB/SUB pattern。
 int ACLCheckAllPerm(client *c, int *idxptr) {
+    // 这里check执行的命令、子命令、key是否被允许操作。
     int acl_retval = ACLCheckCommandPerm(c,idxptr);
     if (acl_retval != ACL_OK)
         return acl_retval;
+    // 如果是pub/sub命令，需要检查channel参数是否允许被操作。
     if (c->cmd->proc == publishCommand)
+        // publish命令，index、count都为1，非pattern。
         acl_retval = ACLCheckPubsubPerm(c,1,1,0,idxptr);
     else if (c->cmd->proc == subscribeCommand)
+        // subscribe命令，第一个channel的index为1，可订阅多个，count 为c->argc-1，非pattern
         acl_retval = ACLCheckPubsubPerm(c,1,c->argc-1,0,idxptr);
     else if (c->cmd->proc == psubscribeCommand)
+        // psubscribe命令，同subscribe，不同的是这个是pattern模式
         acl_retval = ACLCheckPubsubPerm(c,1,c->argc-1,1,idxptr);
     return acl_retval;
 }

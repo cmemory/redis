@@ -32,9 +32,13 @@
 #define __INTSET_H
 #include <stdint.h>
 
+// intset结构，注意数据都是小端模式存储
 typedef struct intset {
+    // 编码方式，INT16、INT32、INT64，值分别是2、4、8。
     uint32_t encoding;
+    // intset总的元素数。
     uint32_t length;
+    // 连续的存储内容。
     int8_t contents[];
 } intset;
 

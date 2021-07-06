@@ -40,21 +40,27 @@ void initClientMultiState(client *c) {
 }
 
 /* Release all the resources associated with MULTI/EXEC state */
+// 释放与MULTI/EXEC state相关的所有资源
 void freeClientMultiState(client *c) {
     int j;
 
+    // 对于每个multi cmd，释放所有的参数。
     for (j = 0; j < c->mstate.count; j++) {
         int i;
+        // 获取multi cmd
         multiCmd *mc = c->mstate.commands+j;
 
+        // 释放multi cmd的参数
         for (i = 0; i < mc->argc; i++)
             decrRefCount(mc->argv[i]);
         zfree(mc->argv);
     }
+    // 释放mstate中的所有multi cmd
     zfree(c->mstate.commands);
 }
 
 /* Add a new command into the MULTI commands queue */
+// 添加新命令到MULTI命令队列中
 void queueMultiCommand(client *c) {
     multiCmd *mc;
     int j;
@@ -63,32 +69,46 @@ void queueMultiCommand(client *c) {
      * this is useful in case client sends these in a pipeline, or doesn't
      * bother to read previous responses and didn't notice the multi was already
      * aborted. */
+    // 如果事务已经abort了，直接返回。
+    // 因为有的事务是通过pipeline执行的，或者不检查前面的结果是否成功，也不看事务是否已经abort。
+    // 所以这样直接返回，避免了无效的入队即内存开销。
     if (c->flags & CLIENT_DIRTY_EXEC)
         return;
 
+    // 每次入队都要重新分配空间？
     c->mstate.commands = zrealloc(c->mstate.commands,
             sizeof(multiCmd)*(c->mstate.count+1));
+    // 获取到新加入命令在c->mstate.commands中的位置。
     mc = c->mstate.commands+c->mstate.count;
+    // 将命令信息写入
     mc->cmd = c->cmd;
     mc->argc = c->argc;
+    // 处理命令参数，先分配内存，再数据拷贝，再新创建的参数对象增加引用计数。
     mc->argv = zmalloc(sizeof(robj*)*c->argc);
     memcpy(mc->argv,c->argv,sizeof(robj*)*c->argc);
     for (j = 0; j < c->argc; j++)
         incrRefCount(mc->argv[j]);
+    // 更新mstate状态，如命令数，所有命令flags的并集。
     c->mstate.count++;
     c->mstate.cmd_flags |= c->cmd->flags;
     c->mstate.cmd_inv_flags |= ~c->cmd->flags;
 }
 
 void discardTransaction(client *c) {
+    // 释放multi state结构
     freeClientMultiState(c);
+    // 释放后，再将multi state设置到初始状态
     initClientMultiState(c);
+    // 清除client关于事务的相关标识
     c->flags &= ~(CLIENT_MULTI|CLIENT_DIRTY_CAS|CLIENT_DIRTY_EXEC);
+    // 解除所有key的watch
     unwatchAllKeys(c);
 }
 
 /* Flag the transaction as DIRTY_EXEC so that EXEC will fail.
  * Should be called every time there is an error while queueing a command. */
+// 标记事务为DIRTY_EXEC，从而在EXEC时失败处理。
+// 在MULTI状态时，每次命令入队出错都应该调用这个方法来标记事务dirty。
 void flagTransaction(client *c) {
     if (c->flags & CLIENT_MULTI)
         c->flags |= CLIENT_DIRTY_EXEC;
@@ -127,8 +147,11 @@ void afterPropagateExec() {
 
 /* Send a MULTI command to all the slaves and AOF file. Check the execCommand
  * implementation for more information. */
+// 传播MULTI命令给AOF和slaves。
 void execCommandPropagateMulti(int dbid) {
+    // 传播MULTI前确保是当前事务首次传播，并propagate_in_transaction标识
     beforePropagateMulti();
+    // 调用propagate传播MULTI命令
     propagate(server.multiCommand,dbid,&shared.multi,1,
               PROPAGATE_AOF|PROPAGATE_REPL);
 }
@@ -316,11 +339,13 @@ void watchForKey(client *c, robj *key) {
 
 /* Unwatch all the keys watched by this client. To clean the EXEC dirty
  * flag is up to the caller. */
+// 解除client watch的所有key。EXEC dirty标识需要由调用方自己清理。
 void unwatchAllKeys(client *c) {
     listIter li;
     listNode *ln;
 
     if (listLength(c->watched_keys) == 0) return;
+    // 遍历当前client watch keys列表，挨个处理每个key
     listRewind(c->watched_keys,&li);
     while((ln = listNext(&li))) {
         list *clients;
@@ -328,15 +353,20 @@ void unwatchAllKeys(client *c) {
 
         /* Lookup the watched key -> clients list and remove the client
          * from the list */
+        // 根据当前处理的watched key，去该key对应的db结构中，获取该key被watch的相应client列表，从列表中移除当前client。
         wk = listNodeValue(ln);
         clients = dictFetchValue(wk->db->watched_keys, wk->key);
         serverAssertWithInfo(c,NULL,clients != NULL);
+        // 从key的watch列表中移除当前client。
         listDelNode(clients,listSearchKey(clients,c));
         /* Kill the entry at all if this was the only client */
+        // 如果移除后，该key的watch列表没有client了，则从watched_keys dict中移除key。
         if (listLength(clients) == 0)
             dictDelete(wk->db->watched_keys, wk->key);
         /* Remove this watched key from the client->watched list */
+        // 从当前client的watch keys列表中移除该key，从而不再对该key watch。
         listDelNode(c->watched_keys,ln);
+        // 释放空间。
         decrRefCount(wk->key);
         zfree(wk);
     }
@@ -344,17 +374,20 @@ void unwatchAllKeys(client *c) {
 
 /* "Touch" a key, so that if this key is being WATCHed by some client the
  * next EXEC will fail. */
+// watch的key被修改了，需要这里标识client的事务为dirty状态，从而在EXEC执行时失败，保证原子性。
 void touchWatchedKey(redisDb *db, robj *key) {
     list *clients;
     listIter li;
     listNode *ln;
 
+    // 该key没有被client watch，返回。
     if (dictSize(db->watched_keys) == 0) return;
     clients = dictFetchValue(db->watched_keys, key);
     if (!clients) return;
 
     /* Mark all the clients watching this key as CLIENT_DIRTY_CAS */
     /* Check if we are already watching for this key */
+    // 如果有client watch这个key，遍历clients，每个client都设置CLIENT_DIRTY_CAS标识。
     listRewind(clients,&li);
     while((ln = listNext(&li))) {
         client *c = listNodeValue(ln);
@@ -370,24 +403,34 @@ void touchWatchedKey(redisDb *db, robj *key) {
  * replaced_with: for SWAPDB, the WATCH should be invalidated if
  * the key exists in either of them, and skipped only if it
  * doesn't exist in both. */
+// 当DB dirty的时候，为当前连接该DB的每个client设置CLIENT_DIRTY_CAS标识。
+// 这一般会在如下的情况发生：FLUSHDB, FLUSHALL, SWAPDB。
+// replaced_with：对于SWAPDB，仅当key在两个db都不存在时才跳过；否则如果key在任意一个db，watch都应该是无效的。
 void touchAllWatchedKeysInDb(redisDb *emptied, redisDb *replaced_with) {
     listIter li;
     listNode *ln;
     dictEntry *de;
 
+    // 如果原db没有watched keys，返回。
     if (dictSize(emptied->watched_keys) == 0) return;
 
+    // 遍历watched_keys进行处理。
     dictIterator *di = dictGetSafeIterator(emptied->watched_keys);
     while((de = dictNext(di)) != NULL) {
+        // 取到当前key以及关联watch的clients列表
         robj *key = dictGetKey(de);
         list *clients = dictGetVal(de);
+        // 没有clients跳过。否则遍历client进行处理。
         if (!clients) continue;
         listRewind(clients,&li);
         while((ln = listNext(&li))) {
             client *c = listNodeValue(ln);
+            // 这里可以优化为一个if语句，然后把while循环放到if中处理。
             if (dictFind(emptied->dict, key->ptr)) {
+                // 如果需要清空的db中有当前处理的key，则设置client CLIENT_DIRTY_CAS标识。
                 c->flags |= CLIENT_DIRTY_CAS;
             } else if (replaced_with && dictFind(replaced_with->dict, key->ptr)) {
+                // 如果需要清空的db中没有当前处理的key，而替换的db中有，也应该给client 加上CLIENT_DIRTY_CAS标识。
                 c->flags |= CLIENT_DIRTY_CAS;
             }
         }

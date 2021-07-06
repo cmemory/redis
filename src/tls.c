@@ -918,6 +918,7 @@ static int connTLSGetType(connection *conn_) {
     return CONN_TYPE_TLS;
 }
 
+// CT_TLS类型
 ConnectionType CT_TLS = {
     .ae_handler = tlsEventHandler,
     .accept = connTLSAccept,

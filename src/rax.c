@@ -1544,6 +1544,7 @@ int raxSeek(raxIterator *it, const char *op, unsigned char *ele, size_t len) {
     if (first) {
         /* Seeking the first key greater or equal to the empty string
          * is equivalent to seeking the smaller key available. */
+        // 寻找大于或等于空字符串的第一个key，相当于寻找可用的最小键。
         return raxSeek(it,">=",NULL,0);
     }
 

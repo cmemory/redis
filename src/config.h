@@ -104,6 +104,7 @@
 #endif
 
 #if __GNUC__ >= 3
+// __builtin_expect使用：https://blog.csdn.net/qq_22660775/article/details/89028258
 #define likely(x) __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)
 #else

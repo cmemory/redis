@@ -24,7 +24,9 @@ static char monotonic_info_string[32];
  *   CFLAGS="-DUSE_PROCESSOR_CLOCK"
 #define USE_PROCESSOR_CLOCK
  */
-
+// 使用处理器时钟能提供性能吞吐更好的Redis，不论是否使用单调时钟。
+// 使用处理器时钟比POSIX的clock_getting调用更快。同时在现代系统中也更安全。
+// 想要使用处理器时钟，要么#define USE_PROCESSOR_CLOCK解除注释，要么编译的时候使用CFLAGS="-DUSE_PROCESSOR_CLOCK"
 
 #if defined(USE_PROCESSOR_CLOCK) && defined(__x86_64__) && defined(__linux__)
 #include <regex.h>

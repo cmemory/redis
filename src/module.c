@@ -5202,6 +5202,9 @@ void RM_LatencyAddSample(const char *event, mstime_t latency) {
  * will be actually read in a more appropriate place in the
  * moduleHandleBlockedClients() function that is where clients are actually
  * served. */
+// 唤醒的管道的读处理handler。
+// 我们在这里没有做任何处理，唤醒的数据将在moduleHandleBlockedClients函数中更合适的地方读取处理。
+// 在moduleHandleBlockedClients中，将真正处理阻塞的clients相关逻辑。
 void moduleBlockedClientPipeReadable(aeEventLoop *el, int fd, void *privdata, int mask) {
     UNUSED(el);
     UNUSED(fd);
@@ -7909,6 +7912,7 @@ void ModuleForkDoneHandler(int exitcode, int bysignal) {
     serverLog(LL_NOTICE,
         "Module fork exited pid: %ld, retcode: %d, bysignal: %d",
         (long) server.child_pid, exitcode, bysignal);
+    // 如果有指定done_handler，则调用该函数进行处理
     if (moduleForkInfo.done_handler) {
         moduleForkInfo.done_handler(exitcode, bysignal,
             moduleForkInfo.done_handler_user_data);
@@ -8413,6 +8417,9 @@ void moduleRegisterCoreAPI(void);
  * initialization.
  * For example, selectDb() in createClient() requires that server.db has
  * been initialized, see #7323. */
+// module初始化的一些步骤需要放在server初始化的后面。
+// 例如：module使用的client初始化需要调用createClient()，里面需要处理selectDb()，这需要server.db在之前已经初始化过了。
+// 所以module client的创建要放在server初始化之后。
 void moduleInitModulesSystemLast(void) {
     moduleFreeContextReusedClient = createClient(NULL);
     moduleFreeContextReusedClient->flags |= CLIENT_MODULE;

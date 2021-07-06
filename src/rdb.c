@@ -94,6 +94,7 @@ void rdbReportError(int corruption_error, int linenum, char *reason, ...) {
     exit(1);
 }
 
+// 将指针p位置的数据，写入len长度到rdb中
 static ssize_t rdbWriteRaw(rio *rdb, void *p, size_t len) {
     if (rdb && rioWrite(rdb,p,len) == 0)
         return -1;
@@ -107,8 +108,11 @@ int rdbSaveType(rio *rdb, unsigned char type) {
 /* Load a "type" in RDB format, that is a one byte unsigned integer.
  * This function is not only used to load object types, but also special
  * "types" like the end-of-file type, the EXPIRE type, and so forth. */
+// 加载1字节的无符号整数表示的RDB结构数据的类型。
+// 这个函数不仅用于处理加载对象类型，还用于加载特殊的"类型"，如文件结尾类型、EXPIRE类型等。
 int rdbLoadType(rio *rdb) {
     unsigned char type;
+    // 就是读取1字节数据返回
     if (rioRead(rdb,&type,1) == 0) return -1;
     return type;
 }
@@ -156,30 +160,37 @@ long long rdbLoadMillisecondTime(rio *rdb, int rdbver) {
 /* Saves an encoded length. The first two bits in the first byte are used to
  * hold the encoding type. See the RDB_* definitions for more information
  * on the types of encoding. */
+// 保存编码长度。第一个字节的前两位用于保存编码类型。编码类型见RDB_*定义。
 int rdbSaveLen(rio *rdb, uint64_t len) {
     unsigned char buf[2];
     size_t nwritten;
 
     if (len < (1<<6)) {
         /* Save a 6 bit len */
+        // len<64时，我们用一个字节即可存储长度数字，字节首位是00。
         buf[0] = (len&0xFF)|(RDB_6BITLEN<<6);
         if (rdbWriteRaw(rdb,buf,1) == -1) return -1;
         nwritten = 1;
     } else if (len < (1<<14)) {
         /* Save a 14 bit len */
+        // 2个字节存储，首位是01。
         buf[0] = ((len>>8)&0xFF)|(RDB_14BITLEN<<6);
         buf[1] = len&0xFF;
         if (rdbWriteRaw(rdb,buf,2) == -1) return -1;
         nwritten = 2;
     } else if (len <= UINT32_MAX) {
         /* Save a 32 bit len */
+        // 4个额外字节存储长度，一个字节表示类型用于区分编码。
         buf[0] = RDB_32BITLEN;
+        // 存储类型
         if (rdbWriteRaw(rdb,buf,1) == -1) return -1;
         uint32_t len32 = htonl(len);
+        // 存储长度
         if (rdbWriteRaw(rdb,&len32,4) == -1) return -1;
         nwritten = 1+4;
     } else {
         /* Save a 64 bit len */
+        // 8个额外字节存储长度，一个字节表示类型用于区分编码。
         buf[0] = RDB_64BITLEN;
         if (rdbWriteRaw(rdb,buf,1) == -1) return -1;
         len = htonu64(len);
@@ -199,31 +210,39 @@ int rdbSaveLen(rio *rdb, uint64_t len) {
  * encodings.
  *
  * The function returns -1 on error, 0 on success. */
+// 加载编码长度。如果加载的长度是使用rdbSaveLen()存储的正常长度，读取的长度会放在"*lenptr"中返回。
+// 如果加载的长度描述了后面的特殊编码，则'*isencoded'设置为 1，编码格式存储在'*lenptr'中。特殊编码见RDB_ENC_*定义。
 int rdbLoadLenByRef(rio *rdb, int *isencoded, uint64_t *lenptr) {
     unsigned char buf[2];
     int type;
 
     if (isencoded) *isencoded = 0;
+    // 读取第一个字节，取出最高两位bit，判断类型。
     if (rioRead(rdb,buf,1) == 0) return -1;
     type = (buf[0]&0xC0)>>6;
     if (type == RDB_ENCVAL) {
         /* Read a 6 bit encoding type. */
+        // 如果表示编码类型，则读出对应6bit的编码类型。
         if (isencoded) *isencoded = 1;
         *lenptr = buf[0]&0x3F;
     } else if (type == RDB_6BITLEN) {
         /* Read a 6 bit len. */
+        // 如果是6bit的长度，则读出长度。
         *lenptr = buf[0]&0x3F;
     } else if (type == RDB_14BITLEN) {
         /* Read a 14 bit len. */
+        // 如果是14bit的长度，则再读取一字节。组合得到长度
         if (rioRead(rdb,buf+1,1) == 0) return -1;
         *lenptr = ((buf[0]&0x3F)<<8)|buf[1];
     } else if (buf[0] == RDB_32BITLEN) {
         /* Read a 32 bit len. */
+        // 如果是32bit的长度，则再读取4字节即为长度。
         uint32_t len;
         if (rioRead(rdb,&len,4) == 0) return -1;
         *lenptr = ntohl(len);
     } else if (buf[0] == RDB_64BITLEN) {
         /* Read a 64 bit len. */
+        // 如果是64bit的长度，则再读取4字节即为长度。
         uint64_t len;
         if (rioRead(rdb,&len,8) == 0) return -1;
         *lenptr = ntohu64(len);
@@ -239,9 +258,12 @@ int rdbLoadLenByRef(rio *rdb, int *isencoded, uint64_t *lenptr) {
  * from the RDB stream, signaling an error by returning RDB_LENERR
  * (since it is a too large count to be applicable in any Redis data
  * structure). */
+// 与rdbLoadLenByRef()函数很像，但是直接返回从RDB流中读取的值。
+// 如果报错，返回RDB_LENERR（该数值太大，不足以用Redis数据结构表示）。
 uint64_t rdbLoadLen(rio *rdb, int *isencoded) {
     uint64_t len;
 
+    // 调用rdbLoadLenByRef获取长度
     if (rdbLoadLenByRef(rdb,isencoded,&len) == -1) return RDB_LENERR;
     return len;
 }
@@ -250,6 +272,9 @@ uint64_t rdbLoadLen(rio *rdb, int *isencoded) {
  * for encoded types. If the function successfully encodes the integer, the
  * representation is stored in the buffer pointer to by "enc" and the string
  * length is returned. Otherwise 0 is returned. */
+// 当"value"符合编码类型支持的范围，对其编码成整数。
+// 编码成功，则编码结果放在enc返回，并返回编码后的长度。
+// 编码的第一个字节表示编码类型，后面1、2、4字节表示值。
 int rdbEncodeInteger(long long value, unsigned char *enc) {
     if (value >= -(1<<7) && value <= (1<<7)-1) {
         enc[0] = (RDB_ENCVAL<<6)|RDB_ENC_INT8;
@@ -697,6 +722,7 @@ int rdbSaveObjectType(rio *rdb, robj *o) {
 
 /* Use rdbLoadType() to load a TYPE in RDB format, but returns -1 if the
  * type is not specifically a valid Object Type. */
+// 使用rdbLoadType()来从RDB格式中解析数据TYPE，如果该type不是一个有效的对象类型，则返回-1
 int rdbLoadObjectType(rio *rdb) {
     int type;
     if ((type = rdbLoadType(rdb)) == -1) return -1;
@@ -1074,6 +1100,9 @@ size_t rdbSavedObjectLen(robj *o, robj *key) {
 /* Save a key-value pair, with expire time, type, key, value.
  * On error -1 is returned.
  * On success if the key was actually saved 1 is returned. */
+// rdb写入key-value对，写入先后顺序是 过期时间，淘汰策略, 键值数据。
+// 这三类每种写入之前都会先写入类型判断后面是什么操作。类型type除了opcode外db中数据结构类型等。
+// 成功save返回1，出错返回-1。
 int rdbSaveKeyValuePair(rio *rdb, robj *key, robj *val, long long expiretime) {
     int savelru = server.maxmemory_policy & MAXMEMORY_FLAG_LRU;
     int savelfu = server.maxmemory_policy & MAXMEMORY_FLAG_LFU;
@@ -1142,6 +1171,7 @@ ssize_t rdbSaveAuxFieldStrInt(rio *rdb, char *key, long long val) {
 }
 
 /* Save a few default AUX fields with information about the RDB generated. */
+// 写入一些默认的辅助字段AUX fields数据，用于保存RDB生成时的一些信息。
 int rdbSaveInfoAuxFields(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
     int redis_bits = (sizeof(void*) == 8) ? 64 : 32;
     int aof_preamble = (rdbflags & RDBFLAGS_AOF_PREAMBLE) != 0;
@@ -1214,74 +1244,101 @@ ssize_t rdbSaveSingleModuleAux(rio *rdb, int when, moduleType *mt) {
  * When the function returns C_ERR and if 'error' is not NULL, the
  * integer pointed by 'error' is set to the value of errno just after the I/O
  * error. */
+// 生成RDB格式的数据dump文件，并将其发送到指定的Redis I/O通道。成功返回ok，否则返回err，并且部分或全部输出可能因I/O错误而丢失。
+// 如果参数error不为NULL，则在发送err时，该字段会返回相应错误的errno值。
+// redis RDB文件格式解析：https://segmentfault.com/a/1190000020518214
 int rdbSaveRio(rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
     dictIterator *di = NULL;
     dictEntry *de;
+    // RDB文件的magic数字
     char magic[10];
     uint64_t cksum;
     size_t processed = 0;
     int j;
     long key_count = 0;
     long long info_updated_time = 0;
+    // 通知父进程，当前处理什么操作
     char *pname = (rdbflags & RDBFLAGS_AOF_PREAMBLE) ? "AOF rewrite" :  "RDB";
 
+    // 根据需要设置checksum函数
     if (server.rdb_checksum)
         rdb->update_cksum = rioGenericUpdateChecksum;
+    // 写入RDB的魔法数字
     snprintf(magic,sizeof(magic),"REDIS%04d",RDB_VERSION);
     if (rdbWriteRaw(rdb,magic,9) == -1) goto werr;
+    // 写入RDB信息的辅助字段Aux Fields
     if (rdbSaveInfoAuxFields(rdb,rdbflags,rsi) == -1) goto werr;
+    // 写入module相关的辅助字段数据（这里写入的都是需要在RDB处理之前的module辅助字段）
     if (rdbSaveModulesAux(rdb, REDISMODULE_AUX_BEFORE_RDB) == -1) goto werr;
 
+    // 遍历db来处理数据写入
     for (j = 0; j < server.dbnum; j++) {
+        // 定位到db
         redisDb *db = server.db+j;
         dict *d = db->dict;
+        // 没数据就跳过
         if (dictSize(d) == 0) continue;
+        // 获取安全的迭代器
         di = dictGetSafeIterator(d);
 
         /* Write the SELECT DB opcode */
+        // 写入select db命令。"select"写入的是1字节的操作码，db数字写入的是一个变长编码后的数字。
         if (rdbSaveType(rdb,RDB_OPCODE_SELECTDB) == -1) goto werr;
         if (rdbSaveLen(rdb,j) == -1) goto werr;
 
         /* Write the RESIZE DB opcode. */
+        // 写入resize操作。因为RDB加载的时候，db的初始化size很小。这里提前进行resize，后面就不需要再处理
         uint64_t db_size, expires_size;
         db_size = dictSize(db->dict);
         expires_size = dictSize(db->expires);
+        // 先写入1字节的操作码，然后是db和expire两个编码后的size数字。
         if (rdbSaveType(rdb,RDB_OPCODE_RESIZEDB) == -1) goto werr;
         if (rdbSaveLen(rdb,db_size) == -1) goto werr;
         if (rdbSaveLen(rdb,expires_size) == -1) goto werr;
 
         /* Iterate this DB writing every entry */
+        // 迭代处理db中的每一个entry
         while((de = dictNext(di)) != NULL) {
             sds keystr = dictGetKey(de);
             robj key, *o = dictGetVal(de);
             long long expire;
 
+            // 初始化栈对象key
             initStaticStringObject(key,keystr);
+            // 获取过期时间
             expire = getExpire(db,&key);
+            // 写入key-value对，如果有过期时间和淘汰策略也会一并写入。
             if (rdbSaveKeyValuePair(rdb,&key,o,expire) == -1) goto werr;
 
             /* When this RDB is produced as part of an AOF rewrite, move
              * accumulated diff from parent to child while rewriting in
              * order to have a smaller final write. */
+            // 如果当前RDB是作为AOF重写的一部分，我们每写入10kb数据，就读取父进程写入管道的AOF diff增量数据到子进程缓存中。
             if (rdbflags & RDBFLAGS_AOF_PREAMBLE &&
                 rdb->processed_bytes > processed+AOF_READ_DIFF_INTERVAL_BYTES)
             {
                 processed = rdb->processed_bytes;
+                // 读取AOF diff增量数据到子进程缓存中
                 aofReadDiffFromParent();
             }
 
             /* Update child info every 1 second (approximately).
              * in order to avoid calling mstime() on each iteration, we will
              * check the diff every 1024 keys */
+            // 发送当前子进程信息给父进程，大概每1s一次。
+            // 为了避免频繁调用mstime()获取时间，这里每处理1024个key检查下。
             if ((key_count++ & 1023) == 0) {
                 long long now = mstime();
                 if (now - info_updated_time >= 1000) {
+                    // 发送子进程信息
                     sendChildInfo(CHILD_INFO_TYPE_CURRENT_INFO, key_count, pname);
                     info_updated_time = now;
                 }
             }
         }
+        // 每个db迭代处理完成，释放迭代器
         dictReleaseIterator(di);
+        // di置空，如果有报错，我们不在重新release
         di = NULL; /* So that we don't release it again on error. */
     }
 
@@ -1289,9 +1346,12 @@ int rdbSaveRio(rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
      * the script cache as well: on successful PSYNC after a restart, we need
      * to be able to process any EVALSHA inside the replication backlog the
      * master will send us. */
+    // 我们以及将内存数据持久化到磁盘了，这里也要一起处理下脚本缓存：在PSYNC成功处理完成时，我们需要能够执行master将发送来的任何EVALSHA。
     if (rsi && dictSize(server.lua_scripts)) {
+        // 迭代待执行脚本队列处理
         di = dictGetIterator(server.lua_scripts);
         while((de = dictNext(di)) != NULL) {
+            // 挨个将待执行脚本以辅助数据形式写入rdb文件中。
             robj *body = dictGetVal(de);
             if (rdbSaveAuxField(rdb,"lua",3,body->ptr,sdslen(body->ptr)) == -1)
                 goto werr;
@@ -1300,15 +1360,19 @@ int rdbSaveRio(rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
         di = NULL; /* So that we don't release it again on error. */
     }
 
+    // 写入module相关的辅助字段数据（这里写入的都是需要在RDB处理之后数据）
     if (rdbSaveModulesAux(rdb, REDISMODULE_AUX_AFTER_RDB) == -1) goto werr;
 
     /* EOF opcode */
+    // 写入EOF操作码。读取时遇到这个表示RDB处理完了。
     if (rdbSaveType(rdb,RDB_OPCODE_EOF) == -1) goto werr;
 
     /* CRC64 checksum. It will be zero if checksum computation is disabled, the
      * loading code skips the check in this case. */
+    // CRC64 checksum写入。如果checksum计算是禁用的，则最终cksum为0，然后我们会写入0。这样在读取加载时，就会跳过checksum检查。
     cksum = rdb->cksum;
     memrev64ifbe(&cksum);
+    // 写入checksum
     if (rioWrite(rdb,&cksum,8) == 0) goto werr;
     return C_OK;
 
@@ -1326,28 +1390,41 @@ werr:
  * While the suffix is the 40 bytes hex string we announced in the prefix.
  * This way processes receiving the payload can understand when it ends
  * without doing any processing of the content. */
+// 这个函数是rdbSaveRio()的一个封装。对于RDB dump数据增加了前缀和后缀数据。
+// 主要是因为socket流式传输需要确定结束符，所以RDB数据前增加了"$EOF:<40 bytes unguessable hex string>\r\n"来发送结束字符串。
+// 然后RDB数据结束时会发送这40 bytes字符串告知slaves数据发送完了。
+// 通过这种方式，接收方在判断结束时，不需要对发送内容进行任何处理，简单方便。
 int rdbSaveRioWithEOFMark(rio *rdb, int *error, rdbSaveInfo *rsi) {
     char eofmark[RDB_EOF_MARK_SIZE];
 
+    // 开始持久化传输，触发module事件
     startSaving(RDBFLAGS_REPLICATION);
+    // 生成随机字符串作为结束符
     getRandomHexChars(eofmark,RDB_EOF_MARK_SIZE);
     if (error) *error = 0;
+    // 写入预设置的结束标识到基于socket conn的rio
     if (rioWrite(rdb,"$EOF:",5) == 0) goto werr;
     if (rioWrite(rdb,eofmark,RDB_EOF_MARK_SIZE) == 0) goto werr;
     if (rioWrite(rdb,"\r\n",2) == 0) goto werr;
+    // 调用rdbSaveRio，写入rdb数据到基于socket conn的rio中
     if (rdbSaveRio(rdb,error,RDBFLAGS_NONE,rsi) == C_ERR) goto werr;
+    // RDB传输结束了，发送结束符给到基于socket conn的rio中
     if (rioWrite(rdb,eofmark,RDB_EOF_MARK_SIZE) == 0) goto werr;
+    // rdb全部保存到rio中，结束触发module事件
     stopSaving(1);
     return C_OK;
 
 werr: /* Write error. */
     /* Set 'error' only if not already set by rdbSaveRio() call. */
+    // 如果前面写数据到rio有报错的话，这里处理写入错误返回。
+    // 注意rdbSaveRio()报错的话，该函数里会自己设置error，这里只有在error没设置的时候，才处理。
     if (error && *error == 0) *error = errno;
     stopSaving(0);
     return C_ERR;
 }
 
 /* Save the DB on disk. Return C_ERR on error, C_OK on success. */
+// 处理RDB生成，并保存到到磁盘上。
 int rdbSave(char *filename, rdbSaveInfo *rsi) {
     char tmpfile[256];
     char cwd[MAXPATHLEN]; /* Current working dir path for error messages. */
@@ -1355,9 +1432,11 @@ int rdbSave(char *filename, rdbSaveInfo *rsi) {
     rio rdb;
     int error = 0;
 
+    // 创建临时文件并打开，用于写RDB数据
     snprintf(tmpfile,256,"temp-%d.rdb", (int) getpid());
     fp = fopen(tmpfile,"w");
     if (!fp) {
+        // 创建打开临时文件出错，获取当前工作目录，输出错误信息。
         char *cwdp = getcwd(cwd,MAXPATHLEN);
         serverLog(LL_WARNING,
             "Failed opening the RDB file %s (in server root dir %s) "
@@ -1368,18 +1447,23 @@ int rdbSave(char *filename, rdbSaveInfo *rsi) {
         return C_ERR;
     }
 
+    // 初始化文件target的rio
     rioInitWithFile(&rdb,fp);
+    // 开始RDB save，触发相关module事件
     startSaving(RDBFLAGS_NONE);
 
     if (server.rdb_save_incremental_fsync)
+        // 设置RDB save时，自动fsync的条件。大于REDIS_AUTOSYNC_BYTES=32M时自动刷盘。
         rioSetAutoSync(&rdb,REDIS_AUTOSYNC_BYTES);
 
+    // 处理内存数据，以RDB格式持久化。
     if (rdbSaveRio(&rdb,&error,RDBFLAGS_NONE,rsi) == C_ERR) {
         errno = error;
         goto werr;
     }
 
     /* Make sure data will not remain on the OS's output buffers */
+    // 前面rdb save处理完了，这里要确保所有的数据都刷盘成功。
     if (fflush(fp)) goto werr;
     if (fsync(fileno(fp))) goto werr;
     if (fclose(fp)) { fp = NULL; goto werr; }
@@ -1387,6 +1471,7 @@ int rdbSave(char *filename, rdbSaveInfo *rsi) {
     
     /* Use RENAME to make sure the DB file is changed atomically only
      * if the generate DB file is ok. */
+    // 临时文件重命名，会删除老文件。（这里为什么不异步删除？）
     if (rename(tmpfile,filename) == -1) {
         char *cwdp = getcwd(cwd,MAXPATHLEN);
         serverLog(LL_WARNING,
@@ -1402,6 +1487,7 @@ int rdbSave(char *filename, rdbSaveInfo *rsi) {
     }
 
     serverLog(LL_NOTICE,"DB saved on disk");
+    // RDB save结束，更新状态
     server.dirty = 0;
     server.lastsave = time(NULL);
     server.lastbgsave_status = C_OK;
@@ -1419,6 +1505,7 @@ werr:
 int rdbSaveBackground(char *filename, rdbSaveInfo *rsi) {
     pid_t childpid;
 
+    // 如果当前有后台进程在处理，返回err
     if (hasActiveChildProcess()) return C_ERR;
 
     server.dirty_before_bgsave = server.dirty;
@@ -1428,8 +1515,11 @@ int rdbSaveBackground(char *filename, rdbSaveInfo *rsi) {
         int retval;
 
         /* Child */
+        // fork的子进程
+        // 设置进程title，cpu亲和性
         redisSetProcTitle("redis-rdb-bgsave");
         redisSetCpuAffinity(server.bgsave_cpulist);
+        // 处理RDB save
         retval = rdbSave(filename,rsi);
         if (retval == C_OK) {
             sendChildCowInfo(CHILD_INFO_TYPE_RDB_COW_SIZE, "RDB");
@@ -1444,6 +1534,7 @@ int rdbSaveBackground(char *filename, rdbSaveInfo *rsi) {
             return C_ERR;
         }
         serverLog(LL_NOTICE,"Background saving started by pid %ld",(long) childpid);
+        // 父进程设置相关属性
         server.rdb_save_time_start = time(NULL);
         server.rdb_child_type = RDB_CHILD_TYPE_DISK;
         return C_OK;
@@ -2238,8 +2329,10 @@ robj *rdbLoadObject(int rdbtype, rio *rdb, sds key) {
 
 /* Mark that we are loading in the global state and setup the fields
  * needed to provide loading stats. */
+// 全局状态中标识我们正在加载数据，并初始化相关加载状态信息。
 void startLoading(size_t size, int rdbflags) {
     /* Load the DB */
+    // 初始化数据加载全局状态
     server.loading = 1;
     server.loading_start_time = time(NULL);
     server.loading_loaded_bytes = 0;
@@ -2248,6 +2341,7 @@ void startLoading(size_t size, int rdbflags) {
     blockingOperationStarts();
 
     /* Fire the loading modules start event. */
+    // 触发开始加载的modlue事件
     int subevent;
     if (rdbflags & RDBFLAGS_AOF_PREAMBLE)
         subevent = REDISMODULE_SUBEVENT_LOADING_AOF_START;
@@ -2261,15 +2355,19 @@ void startLoading(size_t size, int rdbflags) {
 /* Mark that we are loading in the global state and setup the fields
  * needed to provide loading stats.
  * 'filename' is optional and used for rdb-check on error */
+// 更新全局状态正在loading，并设置加载状态信息。
 void startLoadingFile(FILE *fp, char* filename, int rdbflags) {
     struct stat sb;
+    // 获取文件状态信息，填充sb
     if (fstat(fileno(fp), &sb) == -1)
         sb.st_size = 0;
     rdbFileBeingLoaded = filename;
+    // 开始加载，设置全局状态及相关加载信息
     startLoading(sb.st_size, rdbflags);
 }
 
 /* Refresh the loading progress info */
+// 更新加载进度信息
 void loadingProgress(off_t pos) {
     server.loading_loaded_bytes = pos;
     if (server.stat_peak_memory < zmalloc_used_memory())
@@ -2277,12 +2375,14 @@ void loadingProgress(off_t pos) {
 }
 
 /* Loading finished */
+// 加载结束时调用。更新一些全局状态，触发module事件。
 void stopLoading(int success) {
     server.loading = 0;
     blockingOperationEnds();
     rdbFileBeingLoaded = NULL;
 
     /* Fire the loading modules end event. */
+    // 触发module加载结束事件
     moduleFireServerEvent(REDISMODULE_EVENT_LOADING,
                           success?
                             REDISMODULE_SUBEVENT_LOADING_ENDED:
@@ -2313,22 +2413,30 @@ void stopSaving(int success) {
 
 /* Track loading progress in order to serve client's from time to time
    and if needed calculate rdb checksum  */
+// 追踪加载的进度，从而隔一段时间处理一下client请求。另外如果有需要，会计算checksum。
 void rdbLoadProgressCallback(rio *r, const void *buf, size_t len) {
     if (server.rdb_checksum)
+        // 更新计算checksum
         rioGenericUpdateChecksum(r, buf, len);
     if (server.loading_process_events_interval_bytes &&
         (r->processed_bytes + len)/server.loading_process_events_interval_bytes > r->processed_bytes/server.loading_process_events_interval_bytes)
     {
+        // 每处理大约server.loading_process_events_interval_bytes的数据后进行一些操作
         if (server.masterhost && server.repl_state == REPL_STATE_TRANSFER)
+            // 如果在通过传输数据无盘加载RDB。这里每处理一定数据后（每隔一定时间）通知master我们存活。
             replicationSendNewlineToMaster();
+        // 更新加载进度以及内存峰值统计
         loadingProgress(r->processed_bytes);
+        // 处理加载数据阻塞期间client请求
         processEventsWhileBlocked();
+        // 处理加载期间module事件。
         processModuleLoadingProgressEvent(0);
     }
 }
 
 /* Load an RDB file from the rio stream 'rdb'. On success C_OK is returned,
  * otherwise C_ERR is returned and 'errno' is set accordingly. */
+// 从rio目标对象'rdb'中加载RDB文件到内存中。成功返回ok，失败返回err，并设置相应的errno。
 int rdbLoadRio(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
     uint64_t dbid;
     int type, rdbver;
@@ -2337,6 +2445,7 @@ int rdbLoadRio(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
 
     rdb->update_cksum = rdbLoadProgressCallback;
     rdb->max_processing_chunk = server.loading_process_events_interval_bytes;
+    // 处理magic数字，目前是"REDIS0009"，读取前9个字符，判断签名和版本。
     if (rioRead(rdb,buf,9) == 0) goto eoferr;
     buf[9] = '\0';
     if (memcmp(buf,"REDIS",5) != 0) {
@@ -2352,6 +2461,7 @@ int rdbLoadRio(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
     }
 
     /* Key-specific attributes, set by opcodes before the key type. */
+    // 这些是key指定属性，由操作码在key类型之前设置。数据写入格式：type expire，type lru/lfu, type key、value。
     long long lru_idle = -1, lfu_freq = -1, expiretime = -1, now = mstime();
     long long lru_clock = LRU_CLOCK();
 
@@ -2360,13 +2470,17 @@ int rdbLoadRio(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
         robj *val;
 
         /* Read type. */
+        // 我们每次解析之前都先要取得1字节的type，然后根据type来确定后面是什么操作，进而取出数据。
         if ((type = rdbLoadType(rdb)) == -1) goto eoferr;
 
         /* Handle special types. */
+        // 根据不同的type类别，进行不同的处理
         if (type == RDB_OPCODE_EXPIRETIME) {
             /* EXPIRETIME: load an expire associated with the next key
              * to load. Note that after loading an expire we need to
              * load the actual type, and continue. */
+            // EXPIRETIME：加载与下一个key关联的过期时间。
+            // 注意加载过期时间值后，我们又需要接着再加载type进行下一轮的处理。所以处理结束后使用continue。
             expiretime = rdbLoadTime(rdb);
             expiretime *= 1000;
             if (rioGetReadError(rdb)) goto eoferr;
@@ -2374,26 +2488,31 @@ int rdbLoadRio(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
         } else if (type == RDB_OPCODE_EXPIRETIME_MS) {
             /* EXPIRETIME_MS: milliseconds precision expire times introduced
              * with RDB v3. Like EXPIRETIME but no with more precision. */
+            // EXPIRETIME_MS：RDB v3引入的毫秒精度的过期时间。跟EXPIRETIME差不多，只是精度更精确。
             expiretime = rdbLoadMillisecondTime(rdb,rdbver);
             if (rioGetReadError(rdb)) goto eoferr;
             continue; /* Read next opcode. */
         } else if (type == RDB_OPCODE_FREQ) {
             /* FREQ: LFU frequency. */
+            // FREQ：处理LFU频率
             uint8_t byte;
             if (rioRead(rdb,&byte,1) == 0) goto eoferr;
             lfu_freq = byte;
             continue; /* Read next opcode. */
         } else if (type == RDB_OPCODE_IDLE) {
             /* IDLE: LRU idle time. */
+            // IDLE：处理LRU时间
             uint64_t qword;
             if ((qword = rdbLoadLen(rdb,NULL)) == RDB_LENERR) goto eoferr;
             lru_idle = qword;
             continue; /* Read next opcode. */
         } else if (type == RDB_OPCODE_EOF) {
             /* EOF: End of file, exit the main loop. */
+            // EOF：类型是eof，则RDB处理结束，跳出当前循环。
             break;
         } else if (type == RDB_OPCODE_SELECTDB) {
             /* SELECTDB: Select the specified database. */
+            // SELECTDB：需要取出dbid，从而设置当前处理的db，后面直接对相应的db字典操作加入数据。
             if ((dbid = rdbLoadLen(rdb,NULL)) == RDB_LENERR) goto eoferr;
             if (dbid >= (unsigned)server.dbnum) {
                 serverLog(LL_WARNING,
@@ -2407,6 +2526,7 @@ int rdbLoadRio(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
         } else if (type == RDB_OPCODE_RESIZEDB) {
             /* RESIZEDB: Hint about the size of the keys in the currently
              * selected data base, in order to avoid useless rehashing. */
+            // RESIZEDB：表示当前选择的数据库中键的大小，我们这里直接扩展指定db的size，避免后面再进行rehash。
             uint64_t db_size, expires_size;
             if ((db_size = rdbLoadLen(rdb,NULL)) == RDB_LENERR)
                 goto eoferr;
@@ -2529,10 +2649,14 @@ int rdbLoadRio(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
             }
         }
 
+        // 如果不是前面的那些特殊类型，那么就是我们的redis对象数据类型了。
+        // 这里我们要处理key-value了。key永远是string类型，而value则是我们取到的type类型。
         /* Read key */
+        // key一定是string，所以这里直接读取字符串key。
         if ((key = rdbGenericLoadStringObject(rdb,RDB_LOAD_SDS,NULL)) == NULL)
             goto eoferr;
         /* Read value */
+        // 根据type去取value数据。
         if ((val = rdbLoadObject(type,rdb,key)) == NULL) {
             sdsfree(key);
             goto eoferr;
@@ -2557,6 +2681,7 @@ int rdbLoadRio(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
             initStaticStringObject(keyobj,key);
 
             /* Add the new object in the hash table */
+            // 将key-value加入到hash表中
             int added = dbAddRDBLoad(db,key,val);
             if (!added) {
                 if (rdbflags & RDBFLAGS_ALLOW_DUP) {
@@ -2573,29 +2698,35 @@ int rdbLoadRio(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
             }
 
             /* Set the expire time if needed */
+            // 设置过期时间
             if (expiretime != -1) {
                 setExpire(NULL,db,&keyobj,expiretime);
             }
 
             /* Set usage information (for eviction). */
+            // 设置LRU/LFU信息
             objectSetLRUOrLFU(val,lfu_freq,lru_idle,lru_clock,1000);
 
             /* call key space notification on key loaded for modules only */
+            // 通知module指定key加载成功事件
             moduleNotifyKeyspaceEvent(NOTIFY_LOADED, "loaded", &keyobj, db->id);
         }
 
         /* Loading the database more slowly is useful in order to test
          * certain edge cases. */
+        // 每次加载一个key后sleep下，稍微减慢load处理，用于测试使用。
         if (server.key_load_delay)
             debugDelay(server.key_load_delay);
 
         /* Reset the state that is key-specified and is populated by
          * opcodes before the key, so that we start from scratch again. */
+        // 重置关于key的一些状态信息，下一个key如果有这些数据会再进行填充。
         expiretime = -1;
         lfu_freq = -1;
         lru_idle = -1;
     }
     /* Verify the checksum if RDB version is >= 5 */
+    // 当RDB version>=5时，需要进行checksum校验。
     if (rdbver >= 5) {
         uint64_t cksum, expected = rdb->cksum;
 
@@ -2634,15 +2765,23 @@ eoferr:
  *
  * If you pass an 'rsi' structure initialied with RDB_SAVE_OPTION_INIT, the
  * loading code will fiil the information fields in the structure. */
+// 与rdbLoadRio()类似，但采用文件处理不是rio流。这里使用文件构建一个rio流，从而调用rdbLoadRio()进行统一处理。
+// 此外，显示在INFO输出中的ETA已初始化和完成。
+// 如果参数rsi传递了值RDB_SAVE_OPTION_INIT，load RDB的代码会填充这个结构中的字段信息。
 int rdbLoad(char *filename, rdbSaveInfo *rsi, int rdbflags) {
     FILE *fp;
     rio rdb;
     int retval;
 
+    // 打开文件
     if ((fp = fopen(filename,"r")) == NULL) return C_ERR;
+    // 开始加载，更新全局状态信息。
     startLoadingFile(fp, filename,rdbflags);
+    // 使用当前读取的RDB文件构建rio对象
     rioInitWithFile(&rdb,fp);
+    // 从rio对象中load
     retval = rdbLoadRio(&rdb,rdbflags,rsi);
+    // 清理工作，关闭打开的文件。更新全局状态，结束loading。
     fclose(fp);
     stopLoading(retval==C_OK);
     return retval;
@@ -2707,6 +2846,7 @@ static void backgroundSaveDoneHandlerSocket(int exitcode, int bysignal) {
 /* When a background RDB saving/transfer terminates, call the right handler. */
 void backgroundSaveDoneHandler(int exitcode, int bysignal) {
     int type = server.rdb_child_type;
+    // 根据正常退出、异常退出或是kill的来进行一些状态更新或清理工作。
     switch(server.rdb_child_type) {
     case RDB_CHILD_TYPE_DISK:
         backgroundSaveDoneHandlerDisk(exitcode,bysignal);
@@ -2724,6 +2864,7 @@ void backgroundSaveDoneHandler(int exitcode, int bysignal) {
     server.rdb_save_time_start = -1;
     /* Possibly there are slaves waiting for a BGSAVE in order to be served
      * (the first stage of SYNC is a bulk transfer of dump.rdb) */
+    // 可能已经有slaves正在等待BGSAVE然后进行数据复制。SYNC的第一阶段是dump.rdb的批量传输。
     updateSlavesWaitingBgsave((!bysignal && exitcode == 0) ? C_OK : C_ERR, type);
 }
 
@@ -2742,22 +2883,27 @@ void killRDBChild(void) {
 
 /* Spawn an RDB child that writes the RDB to the sockets of the slaves
  * that are currently in SLAVE_STATE_WAIT_BGSAVE_START state. */
+// 开启RDB子进程，写RDB格式数据到当前状态是BGSAVE_START的slaves的socket中。
 int rdbSaveToSlavesSockets(rdbSaveInfo *rsi) {
     listNode *ln;
     listIter li;
     pid_t childpid;
     int pipefds[2], rdb_pipe_write, safe_to_exit_pipe;
 
+    // 当前有互斥子进程在执行，返回
     if (hasActiveChildProcess()) return C_ERR;
 
     /* Even if the previous fork child exited, don't start a new one until we
      * drained the pipe. */
+    // 即使前一个fork的子进程退出了，我们管道连接处理完之前，也不要开启新的子进程处理。
     if (server.rdb_pipe_conns) return C_ERR;
 
     /* Before to fork, create a pipe that is used to transfer the rdb bytes to
      * the parent, we can't let it write directly to the sockets, since in case
      * of TLS we must let the parent handle a continuous TLS state when the
      * child terminates and parent takes over. */
+    // 在fork之前，创建一个管道用来传输rdb字节流给父进程。
+    // 我们不能直接写到对应sockets中，因为当使用tls连接时，如果子进程处理结束了，父进程接管时需要能处理连续的TLS状态。
     if (pipe(pipefds) == -1) return C_ERR;
     server.rdb_pipe_read = pipefds[0]; /* read end */
     rdb_pipe_write = pipefds[1]; /* write end */
@@ -2765,6 +2911,7 @@ int rdbSaveToSlavesSockets(rdbSaveInfo *rsi) {
 
     /* create another pipe that is used by the parent to signal to the child
      * that it can exit. */
+    // 创建另一个管道用来父进程向子进程发送信号，通知子进程退出
     if (pipe(pipefds) == -1) {
         close(rdb_pipe_write);
         close(server.rdb_pipe_read);
@@ -2775,12 +2922,14 @@ int rdbSaveToSlavesSockets(rdbSaveInfo *rsi) {
 
     /* Collect the connections of the replicas we want to transfer
      * the RDB to, which are i WAIT_BGSAVE_START state. */
+    // 搜集状态为WAIT_BGSAVE_START的slaves的conn，这些conn就是我们需要发送RDB数据流的slave连接。
     server.rdb_pipe_conns = zmalloc(sizeof(connection *)*listLength(server.slaves));
     server.rdb_pipe_numconns = 0;
     server.rdb_pipe_numconns_writing = 0;
     listRewind(server.slaves,&li);
     while((ln = listNext(&li))) {
         client *slave = ln->value;
+        // 遍历slaves列表，对于WAIT_BGSAVE_START状态的，我们加入到rdb_pipe_conns中，并设置好相关全量重同步配置，等待后面同步。
         if (slave->replstate == SLAVE_STATE_WAIT_BGSAVE_START) {
             server.rdb_pipe_conns[server.rdb_pipe_numconns++] = slave->conn;
             replicationSetupSlaveForFullResync(slave,getPsyncInitialOffset());
@@ -2788,43 +2937,54 @@ int rdbSaveToSlavesSockets(rdbSaveInfo *rsi) {
     }
 
     /* Create the child process. */
+    // 创建子进程
     if ((childpid = redisFork(CHILD_TYPE_RDB)) == 0) {
         /* Child */
         int retval, dummy;
         rio rdb;
 
+        // 子进程创建rio，准备向数据管道写数据，
         rioInitWithFd(&rdb,rdb_pipe_write);
 
         redisSetProcTitle("redis-rdb-to-slaves");
         redisSetCpuAffinity(server.bgsave_cpulist);
 
+        // 往rio中写rdb数据。
         retval = rdbSaveRioWithEOFMark(&rdb,NULL,rsi);
         if (retval == C_OK && rioFlush(&rdb) == 0)
             retval = C_ERR;
 
         if (retval == C_OK) {
+            // rdb写完，发送消息给父进程。
             sendChildCowInfo(CHILD_INFO_TYPE_RDB_COW_SIZE, "RDB");
         }
 
         rioFreeFd(&rdb);
         /* wake up the reader, tell it we're done. */
+        // 关闭rdb_pipe_write，这样父进程server.rdb_pipe_read就可以读到EOF，从而感知到子进程管道数据传输结束了。
         close(rdb_pipe_write);
+        // 子进程不使用server.rdb_child_exit_pipe发数据，可以关闭。
         close(server.rdb_child_exit_pipe); /* close write end so that we can detect the close on the parent. */
         /* hold exit until the parent tells us it's safe. we're not expecting
          * to read anything, just get the error when the pipe is closed. */
+        // hold直到父进程告诉我们安全时，才退出子进程。 这里我们不希望读取任何内容，只是在管道关闭时获取EOF错误。
         dummy = read(safe_to_exit_pipe, pipefds, 1);
         UNUSED(dummy);
         exitFromChild((retval == C_OK) ? 0 : 1);
     } else {
         /* Parent */
+        // 父进程，不从safe_to_exit_pipe读数据，可关闭。
         close(safe_to_exit_pipe);
         if (childpid == -1) {
             serverLog(LL_WARNING,"Can't save in background: fork: %s",
                 strerror(errno));
+            // fork子进程失败
 
             /* Undo the state change. The caller will perform cleanup on
              * all the slaves in BGSAVE_START state, but an early call to
              * replicationSetupSlaveForFullResync() turned it into BGSAVE_END */
+            // 还原slaves连接状态。全量同步RDB失败，调用者将对BGSAVE_START状态的slaves进行清理，
+            // 但是前面我们调用replicationSetupSlaveForFullResync()将状态更改为BGSAVE_END了，所以这里要还原。
             listRewind(server.slaves,&li);
             while((ln = listNext(&li))) {
                 client *slave = ln->value;
@@ -2832,6 +2992,7 @@ int rdbSaveToSlavesSockets(rdbSaveInfo *rsi) {
                     slave->replstate = SLAVE_STATE_WAIT_BGSAVE_START;
                 }
             }
+            // 清理相关结构
             close(rdb_pipe_write);
             close(server.rdb_pipe_read);
             zfree(server.rdb_pipe_conns);
@@ -2841,9 +3002,12 @@ int rdbSaveToSlavesSockets(rdbSaveInfo *rsi) {
         } else {
             serverLog(LL_NOTICE,"Background RDB transfer started by pid %ld",
                 (long) childpid);
+            // fork成功，更新状态
             server.rdb_save_time_start = time(NULL);
             server.rdb_child_type = RDB_CHILD_TYPE_SOCKET;
+            // 父进程对于数据管道是只读的，所以这里关闭rdb_pipe_write，从而我们可以探测到子进程对管道的关闭。
             close(rdb_pipe_write); /* close write in parent so that it can detect the close on the child. */
+            // 监听server.rdb_pipe_read的只读事件，接受处理子进程传输过来的数据，发送到对应的slaves。
             if (aeCreateFileEvent(server.el, server.rdb_pipe_read, AE_READABLE, rdbPipeReadHandler,NULL) == AE_ERR) {
                 serverPanic("Unrecoverable error creating server.rdb_pipe_read file event.");
             }
@@ -2853,13 +3017,17 @@ int rdbSaveToSlavesSockets(rdbSaveInfo *rsi) {
     return C_OK; /* Unreached. */
 }
 
+// SAVE命令处理函数
 void saveCommand(client *c) {
     if (server.child_type == CHILD_TYPE_RDB) {
+        // 如果当前有后台进程在执行RDB save，回复err。
         addReplyError(c,"Background save already in progress");
         return;
     }
     rdbSaveInfo rsi, *rsiptr;
+    // 填充复制相关信息
     rsiptr = rdbPopulateSaveInfo(&rsi);
+    // 当前进程启动RDB save处理
     if (rdbSave(server.rdb_filename,rsiptr) == C_OK) {
         addReply(c,shared.ok);
     } else {
@@ -2868,11 +3036,13 @@ void saveCommand(client *c) {
 }
 
 /* BGSAVE [SCHEDULE] */
+// BGSAVE命令处理函数
 void bgsaveCommand(client *c) {
     int schedule = 0;
 
     /* The SCHEDULE option changes the behavior of BGSAVE when an AOF rewrite
      * is in progress. Instead of returning an error a BGSAVE gets scheduled. */
+    // 当有一个AOF rewrite任务在处理的时候，SCHEDULE参数改变了BGSAVE命令的行为。此时我们将BGSAVE加入调度，后续执行。
     if (c->argc > 1) {
         if (c->argc == 2 && !strcasecmp(c->argv[1]->ptr,"schedule")) {
             schedule = 1;
@@ -2882,12 +3052,15 @@ void bgsaveCommand(client *c) {
         }
     }
 
+    // 填充复制信息
     rdbSaveInfo rsi, *rsiptr;
     rsiptr = rdbPopulateSaveInfo(&rsi);
 
     if (server.child_type == CHILD_TYPE_RDB) {
+        // 当前有一个RDB save在处理
         addReplyError(c,"Background save already in progress");
     } else if (hasActiveChildProcess()) {
+        // 如果有AOF rewrite在执行，我们根据参数来决定是加入调度，还是直接回复err。
         if (schedule) {
             server.rdb_bgsave_scheduled = 1;
             addReplyStatus(c,"Background saving scheduled");
@@ -2897,6 +3070,7 @@ void bgsaveCommand(client *c) {
             "Use BGSAVE SCHEDULE in order to schedule a BGSAVE whenever "
             "possible.");
         }
+        // 启动后台RDB save处理
     } else if (rdbSaveBackground(server.rdb_filename,rsiptr) == C_OK) {
         addReplyStatus(c,"Background saving started");
     } else {
@@ -2913,6 +3087,10 @@ void bgsaveCommand(client *c) {
  * pointer if the instance has a valid master client, otherwise NULL
  * is returned, and the RDB saving will not persist any replication related
  * information. */
+// 填充rdbSaveInfo结构，用于持久化复制信息到RDB文件中。当前该结构仅显示包含从master streams获取的选择的DB。
+// 但是如果rdbSave*()系列函数接收到NULL的rsi结构，则复制ID/偏移量也不会保存。
+// 函数填充的'rsi'通常是在调用者栈上分配的空间，如果当前实例有有效的master client，则返回填充好的rsi指针；
+// 否则返回NULL，RDB持久化将不会保存任何复制相关的信息。
 rdbSaveInfo *rdbPopulateSaveInfo(rdbSaveInfo *rsi) {
     rdbSaveInfo rsi_init = RDB_SAVE_INFO_INIT;
     *rsi = rsi_init;
@@ -2924,18 +3102,25 @@ rdbSaveInfo *rdbPopulateSaveInfo(rdbSaveInfo *rsi) {
      * connects to us, the NULL repl_backlog will trigger a full
      * synchronization, at the same time we will use a new replid and clear
      * replid2. */
+    // 如果当前实例是master，则只有当backlog不为NULL时，我们才填充复制信息。
+    // 因为如果backlog为NULL，意味着它目前没有任何slaves，此时复制信息是没有用的，不需要持久化。
+    // 当有slave连接时，NULL的backlog会触发全量同步，从而生成新的复制ID并清除replid2。
     if (!server.masterhost && server.repl_backlog) {
         /* Note that when server.slaveseldb is -1, it means that this master
          * didn't apply any write commands after a full synchronization.
          * So we can let repl_stream_db be 0, this allows a restarted slave
          * to reload replication ID/offset, it's safe because the next write
          * command must generate a SELECT statement. */
+        // 注意当server.slaveseldb为-1时，意味着当前master在全量同步之后没有执行任何写命令。
+        // 所以我们让repl_stream_db为0，允许重新启动的slave重新加载复制ID/offset。
+        // 这是安全的，因为下一个写命令一定会生成select db语句。
         rsi->repl_stream_db = server.slaveseldb == -1 ? 0 : server.slaveseldb;
         return rsi;
     }
 
     /* If the instance is a slave we need a connected master
      * in order to fetch the currently selected DB. */
+    // 如果当前实例是slave，我们需要有一个连接的master来获取当前的选择的DB。
     if (server.master) {
         rsi->repl_stream_db = server.master->db->id;
         return rsi;
@@ -2946,6 +3131,9 @@ rdbSaveInfo *rdbPopulateSaveInfo(rdbSaveInfo *rsi) {
      * increment the master_repl_offset only from data arriving from the
      * master, so if we are disconnected the offset in the cached master
      * is valid. */
+    // 如果我们没有当前连接的master，但是有cached master，可能是断开重连阶段。
+    // 我们可以使用cached master来填充复制选择的DB，因为只有master的数据到达slave后，slave才会增加master_repl_offset。
+    // 所以当我们断开了连接，cached master中的offset也是有效的。
     if (server.cached_master) {
         rsi->repl_stream_db = server.cached_master->db->id;
         return rsi;

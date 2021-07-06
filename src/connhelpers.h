@@ -40,6 +40,10 @@
  * handlers and tracking connection references, to allow safe destruction
  * of connections from within a handler.
  */
+// 不同connection（目前只有sockets和tls类型）的公共函数。
+// 目前只实现了handlers callback的调用和追踪conn引用，主要用于在handler回调执行时安全的释放conn。
+// 1、在执行connection handler时，保证refs>=1。因为执行前会+1。所以在handler中执行connClose总是安全的。
+// 2、在其他情况不想过早的失去conn，也可以调用connIncrRefs使得refs>=1处理。目前只在connSocketAccept这样使用。
 
 /* Incremenet connection references.
  *
@@ -60,11 +64,12 @@ static inline void connIncrRefs(connection *conn) {
  * explicit connIncrRefs() is used, the caller is expected to take care of
  * that.
  */
-
+// 注意到我们不提供自动释放的逻辑。像callHandler中公共处理流程那样，显式调用connIncrRefs的地方也要注意调用connDecrRefs处理。
 static inline void connDecrRefs(connection *conn) {
     conn->refs--;
 }
 
+// 获取conn的引用计数
 static inline int connHasRefs(connection *conn) {
     return conn->refs;
 }
@@ -74,6 +79,8 @@ static inline int connHasRefs(connection *conn) {
  * 2. Execute the handler (if set).
  * 3. Decrement refs and perform deferred close, if refs==0.
  */
+// helper方法调用handlers
+// 先增加conn的引用，保证安全的执行handler，后面减少引用。然后检查是否需要close连接，需要则close，此时会返回0。
 static inline int callHandler(connection *conn, ConnectionCallbackFunc handler) {
     connIncrRefs(conn);
     if (handler) handler(conn);

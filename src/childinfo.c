@@ -41,10 +41,12 @@ typedef struct {
 /* Open a child-parent channel used in order to move information about the
  * RDB / AOF saving process from the child to the parent (for instance
  * the amount of copy on write memory used) */
+// 打开一个管道，用于子进程发送RDB/AOF处理的信息给父进程。（如发送copy on write内存使用量等。）
 void openChildInfoPipe(void) {
     if (pipe(server.child_info_pipe) == -1) {
         /* On error our two file descriptors should be still set to -1,
          * but we call anyway closeChildInfoPipe() since can't hurt. */
+        // 打开管道报错了，这里需要将对应的fd还原设置为-1。调用closeChildInfoPipe()处理。
         closeChildInfoPipe();
     } else if (anetNonBlock(NULL,server.child_info_pipe[0]) != ANET_OK) {
         closeChildInfoPipe();
@@ -157,6 +159,7 @@ int readChildInfo(childInfoType *information_type, size_t *cow, monotime *cow_up
 }
 
 /* Receive info data from child. */
+// 如果有子进程在执行，serverCron()会每秒处理接收子进程发来的信息。
 void receiveChildInfo(void) {
     if (server.child_info_pipe[0] == -1) return;
 

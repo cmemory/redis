@@ -82,6 +82,7 @@ int THPDisable(void);
 }
 
 /* Add the sample only if the elapsed time is >= to the configured threshold. */
+// 当设置了threshold，且花费的时间>=该threshold，则加入抽样统计
 #define latencyAddSampleIfNeeded(event,var) \
     if (server.latency_monitor_threshold && \
         (var) >= server.latency_monitor_threshold) \

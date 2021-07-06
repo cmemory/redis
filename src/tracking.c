@@ -416,8 +416,10 @@ void freeTrackingRadixTree(rax *rt) {
 }
 
 /* A RESP NULL is sent to indicate that all keys are invalid */
+// 发送给client一个RESP协议的NULL，表示所有的keys都无效了。
 void trackingInvalidateKeysOnFlush(int async) {
     if (server.tracking_clients) {
+        // 如果有track的client，遍历处理，对于CLIENT_TRACKING标识的client发送RESP NULL。
         listNode *ln;
         listIter li;
         listRewind(server.clients,&li);
@@ -430,6 +432,7 @@ void trackingInvalidateKeysOnFlush(int async) {
     }
 
     /* In case of FLUSHALL, reclaim all the memory used by tracking. */
+    // FLUSHALL，清空所有DB，这里要释放track表，回收track使用的所有内存。
     if (TrackingTable) {
         if (async) {
             freeTrackingRadixTreeAsync(TrackingTable);
@@ -451,11 +454,19 @@ void trackingInvalidateKeysOnFlush(int async) {
  * specified fill rate: if we are over, we can just evict informations about
  * a random key, and send invalidation messages to clients like if the key was
  * modified. */
+// Tracking帮助Redis记录哪个client可能有哪些确定的key。
+// redis client所有工作中可能会有很多的读，而keys几乎很少修改，这样client就可以利用本地缓存加快请求的处理。
+// 不过因为client可操作的key数量是没有限制的，这样可能导致服务端需要记录的数据会很多。
+// 所以Redis允许用户为这个数据校验表（缓存表？）配置最大数量的keys，这样就可以限制缓存量。
+// 这个函数确保我们表里的数据不会超过指定的填充率，如果超过了，我们就驱逐一个随机key，并发送invalidation消息给client，告知key被修改消息。
+// 后面client将不再使用本地缓存的该key，除非又有一个对该key的get查询请求，又加入了缓存和tracking表，
 void trackingLimitUsedSlots(void) {
     static unsigned int timeout_counter = 0;
     if (TrackingTable == NULL) return;
+    // 如果没有限制最大key数量，这里不需要驱逐处理，直接返回
     if (server.tracking_table_max_keys == 0) return; /* No limits set. */
     size_t max_keys = server.tracking_table_max_keys;
+    // 如果track的key数量没超过上限，不需要处理。
     if (raxSize(TrackingTable) <= max_keys) {
         timeout_counter = 0;
         return; /* Limit not reached. */
@@ -464,18 +475,27 @@ void trackingLimitUsedSlots(void) {
     /* We have to invalidate a few keys to reach the limit again. The effort
      * we do here is proportional to the number of times we entered this
      * function and found that we are still over the limit. */
+    // 超过了限制，我们需要使一些key无效，从而限制key的数量。
+    // 处理次数与我们'连续的进入该函数并且发现仍然超出限制'的次数成正比的。
+    // 只有当发现数量在限制之下时，我们才又把timeout_counter置为0。
     int effort = 100 * (timeout_counter+1);
 
     /* We just remove one key after another by using a random walk. */
+    // 我们所移除的两个key之间间隔一个随机的步长
     raxIterator ri;
     raxStart(&ri,TrackingTable);
     while(effort > 0) {
         effort--;
+        // 定位到某个元素的迭代器？
         raxSeek(&ri,"^",NULL,0);
+        // 随机向后找一个元素
         raxRandomWalk(&ri,0);
+        // 如果找的迭代结束，直接break
         if (raxEOF(&ri)) break;
+        // 失效当前找的key，发送消息给client
         trackingInvalidateKeyRaw(NULL,(char*)ri.key,ri.key_len,0);
         if (raxSize(TrackingTable) <= max_keys) {
+            // 如果清理后，在限制之下了，则直接返回
             timeout_counter = 0;
             raxStop(&ri);
             return; /* Return ASAP: we are again under the limit. */
@@ -484,6 +504,7 @@ void trackingLimitUsedSlots(void) {
 
     /* If we reach this point, we were not able to go under the configured
      * limit using the maximum effort we had for this run. */
+    // 执行到这里，显然我们effort次数处理后，没有使数量达到限制之下，timeout_counter++等待下次进入的时候更多次的处理。
     raxStop(&ri);
     timeout_counter++;
 }

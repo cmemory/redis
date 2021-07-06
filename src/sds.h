@@ -33,7 +33,9 @@
 #ifndef __SDS_H
 #define __SDS_H
 
+// 最预分配长度
 #define SDS_MAX_PREALLOC (1024*1024)
+// 是否初始化
 extern const char *SDS_NOINIT;
 
 #include <sys/types.h>
@@ -44,14 +46,21 @@ typedef char *sds;
 
 /* Note: sdshdr5 is never used, we just access the flags byte directly.
  * However is here to document the layout of type 5 SDS strings. */
+// 没有使用
 struct __attribute__ ((__packed__)) sdshdr5 {
+    // 低三位作为type标识，高5位标识sdshdr5类型字符串的长度。只能31位？
     unsigned char flags; /* 3 lsb of type, and 5 msb of string length */
     char buf[];
 };
+// __attribute__ ((__packed__)) 标识不进行字节对齐
 struct __attribute__ ((__packed__)) sdshdr8 {
+    // 已用长度
     uint8_t len; /* used */
+    // 分配的长度，不算头和空结束字符，即分配的buf长度
     uint8_t alloc; /* excluding the header and null terminator */
+    // 类型标识，只用了3个bit，还有5个没用
     unsigned char flags; /* 3 lsb of type, 5 unused bits */
+    // 存储字符串的地方
     char buf[];
 };
 struct __attribute__ ((__packed__)) sdshdr16 {
@@ -73,23 +82,34 @@ struct __attribute__ ((__packed__)) sdshdr64 {
     char buf[];
 };
 
-#define SDS_TYPE_5  0
-#define SDS_TYPE_8  1
-#define SDS_TYPE_16 2
-#define SDS_TYPE_32 3
-#define SDS_TYPE_64 4
-#define SDS_TYPE_MASK 7
-#define SDS_TYPE_BITS 3
+#define SDS_TYPE_5  0   // 000
+#define SDS_TYPE_8  1   // 001
+#define SDS_TYPE_16 2   // 010
+#define SDS_TYPE_32 3   // 011
+#define SDS_TYPE_64 4   // 100
+#define SDS_TYPE_MASK 7 // 类型掩码 111
+#define SDS_TYPE_BITS 3 // type占用的bit数
+// define 中 ##表示合并操作符，不解析。如：当T为5时，替换后为 sdshdr5
+// 单#号表示不解析
+// 如 #define STRING(x) #x#x#x
+// 使用 int abc = 100；STRING(abc);  结果为 abcabcabc
+
+// s是buf处指针，SDS_HDR_VAR计算的sh是指向sdshdr结构开始的指针，SDS_HDR一样
 #define SDS_HDR_VAR(T,s) struct sdshdr##T *sh = (void*)((s)-(sizeof(struct sdshdr##T)));
 #define SDS_HDR(T,s) ((struct sdshdr##T *)((s)-(sizeof(struct sdshdr##T))))
+// 按flag定义，移位快速计算Type5字符串长度
 #define SDS_TYPE_5_LEN(f) ((f)>>SDS_TYPE_BITS)
 
 static inline size_t sdslen(const sds s) {
+    // s前一位字符是类型标识
     unsigned char flags = s[-1];
+    // flags后三位判断类型
     switch(flags&SDS_TYPE_MASK) {
         case SDS_TYPE_5:
+            // 快速获得type5字符串长度
             return SDS_TYPE_5_LEN(flags);
         case SDS_TYPE_8:
+            // 其他字符串长度通过len字段获取
             return SDS_HDR(8,s)->len;
         case SDS_TYPE_16:
             return SDS_HDR(16,s)->len;
@@ -104,11 +124,13 @@ static inline size_t sdslen(const sds s) {
 static inline size_t sdsavail(const sds s) {
     unsigned char flags = s[-1];
     switch(flags&SDS_TYPE_MASK) {
+        // type5类型可用长度直接返回0，不让作为value使用？
         case SDS_TYPE_5: {
             return 0;
         }
         case SDS_TYPE_8: {
             SDS_HDR_VAR(8,s);
+            // 分配长度-已用长度，计算可用长度
             return sh->alloc - sh->len;
         }
         case SDS_TYPE_16: {
@@ -133,6 +155,7 @@ static inline void sdssetlen(sds s, size_t newlen) {
         case SDS_TYPE_5:
             {
                 unsigned char *fp = ((unsigned char*)s)-1;
+                // 设置flags高位为新长度
                 *fp = SDS_TYPE_5 | (newlen << SDS_TYPE_BITS);
             }
             break;
@@ -181,6 +204,7 @@ static inline size_t sdsalloc(const sds s) {
     unsigned char flags = s[-1];
     switch(flags&SDS_TYPE_MASK) {
         case SDS_TYPE_5:
+            // type5用了多少，总共就是多少，不可变了，所以这里直接返回目前使用长度
             return SDS_TYPE_5_LEN(flags);
         case SDS_TYPE_8:
             return SDS_HDR(8,s)->alloc;

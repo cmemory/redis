@@ -38,6 +38,7 @@
 
 /* The current RDB version. When the format changes in a way that is no longer
  * backward compatible this number gets incremented. */
+// 当前RDB版本。当格式变更不再向后兼容时，这个数字将增加。
 #define RDB_VERSION 9
 
 /* Defines related to the dump file format. To store 32 bits lengths for short
@@ -54,6 +55,14 @@
  *
  * Lengths up to 63 are stored using a single byte, most DB keys, and may
  * values, will fit inside. */
+// RDB dump格式相关的定义。
+// 为较短的key，使用32位来存储的长度会耗费大量空间，所以我们使用第一个字节的最高2位来区分使用长度。
+//  00|XXXXXX，最高两位是00，表示我们使用6bit来存储后面数据长度。
+//  01|XXXXXX XXXXXXXX，01表示使用6+8=14bit存储后面数据长度。
+//  10|000000 [32bit]，用32bit来存储长度。
+//  10|000001 [64bit]，用64bit来存储长度。
+//  11|OBKIND，这个表示，后面跟着特殊的编码对象。6bit用来指定后面的对象类型。见RDB_ENC_*的定义。
+// 使用单个字节最多存储长度为63。基本涵盖大多数的DB keys或values长度。所以这样处理可以减少存储。
 #define RDB_6BITLEN 0
 #define RDB_14BITLEN 1
 #define RDB_32BITLEN 0x80
@@ -64,6 +73,7 @@
 /* When a length of a string object stored on disk has the first two bits
  * set, the remaining six bits specify a special encoding for the object
  * accordingly to the following defines: */
+// 接着前面 11|OBKIND，当高位是11时，后面6bit根据下面的定义指定对象的特殊编码：
 #define RDB_ENC_INT8 0        /* 8 bit signed integer */
 #define RDB_ENC_INT16 1       /* 16 bit signed integer */
 #define RDB_ENC_INT32 2       /* 32 bit signed integer */
@@ -72,6 +82,7 @@
 /* Map object types to RDB object types. Macros starting with OBJ_ are for
  * memory storage and may change. Instead RDB types must be fixed because
  * we store them on disk. */
+// 将redis对象类型映射到RDB对象类型。以OBJ_开头的宏用于内存存储，可能会变更。而RDB类型因为持久化到磁盘，所以必须是固定不变的。
 #define RDB_TYPE_STRING 0
 #define RDB_TYPE_LIST   1
 #define RDB_TYPE_SET    2
@@ -97,6 +108,7 @@
 #define rdbIsObjectType(t) ((t >= 0 && t <= 7) || (t >= 9 && t <= 15))
 
 /* Special RDB opcodes (saved/loaded with rdbSaveType/rdbLoadType). */
+// 特殊的RDB操作codes（保存/加载时对后面数据的操作编码），1个字节就可以存储。
 #define RDB_OPCODE_MODULE_AUX 247   /* Module auxiliary data. */
 #define RDB_OPCODE_IDLE       248   /* LRU idle time. */
 #define RDB_OPCODE_FREQ       249   /* LFU frequency. */

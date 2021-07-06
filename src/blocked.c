@@ -78,6 +78,11 @@ int getListPositionFromObjectOrReply(client *c, robj *arg, int *position);
  * Secondly for certain blocking types, we have additional info. Right now
  * the only use for additional info we have is when clients are blocked
  * on streams, as we have to remember the ID it blocked for. */
+// 这个结构代表存储于client中的阻塞的key的信息。每一个阻塞到keys上的client都有一个client->bpop.keys的hash表。
+// 该hash映射表的key是指向阻塞key对象的指针，value就是这个bkinfo结构。
+// 这个结构有两个目的，首先因为我们client被阻塞会加入到db中对应key的blocked clients列表中，这里listnode指向该列表中的对应节点，
+// 从而解除阻塞后不用遍历，可以快速定位该节点进行删除。
+// 其次对于指定的阻塞类型，我们会有附加信息，目前仅对于阻塞在stream类型上数据有附加的stream_id信息。
 typedef struct bkinfo {
     listNode *listnode;     /* List node for db->blocking_keys[key] list. */
     streamID stream_id;     /* Stream ID if we blocked in a stream. */
@@ -86,16 +91,21 @@ typedef struct bkinfo {
 /* Block a client for the specific operation type. Once the CLIENT_BLOCKED
  * flag is set client query buffer is not longer processed, but accumulated,
  * and will be processed when the client is unblocked. */
+// 阻塞客户端，指定阻塞类型。 一旦设置了CLIENT_BLOCKED标识，client的查询缓冲区就不会再被处理，一直累积直到client解除阻塞才会再进行处理。
 void blockClient(client *c, int btype) {
+    // 设置相关标识、计数
     c->flags |= CLIENT_BLOCKED;
     c->btype = btype;
     server.blocked_clients++;
     server.blocked_clients_by_type[btype]++;
+    // 如果阻塞有设置超时，我们将该超时加入基数树实现的超时表中
     addClientToTimeoutTable(c);
     if (btype == BLOCKED_PAUSE) {
+        // 如果是client暂停导致的阻塞，这里client还会加入paused_clients队列。并有一个字段指向队列中自己，用于后面快速定位节点进行删除。
         listAddNodeTail(server.paused_clients, c);
         c->paused_list_node = listLast(server.paused_clients);
         /* Mark this client to execute its command */
+        // 标记client有完整的命令待执行
         c->flags |= CLIENT_PENDING_COMMAND;
     }
 }
@@ -103,24 +113,30 @@ void blockClient(client *c, int btype) {
 /* This function is called after a client has finished a blocking operation
  * in order to update the total command duration, log the command into
  * the Slow log if needed, and log the reply duration event if needed. */
+// 当client执行完阻塞操作后，会调用这个函数来更新总的命令执行时长，可能会写入慢处理日志，加入抽样延迟监控。
 void updateStatsOnUnblock(client *c, long blocked_us, long reply_us){
+    // 计算命令执行时长，加入到该命令执行的总时长统计中
     const ustime_t total_cmd_duration = c->duration + blocked_us + reply_us;
     c->lastcmd->microseconds += total_cmd_duration;
 
     /* Log the command into the Slow log if needed. */
+    // 如果需要，添加该命令到慢日志中
     slowlogPushCurrentCommand(c, c->lastcmd, total_cmd_duration);
     /* Log the reply duration event. */
+    // 将当前unblock操作的时长，加入到延时监控统计中。
     latencyAddSampleIfNeeded("command-unblocking",reply_us/1000);
 }
 
 /* This function is called in the beforeSleep() function of the event loop
  * in order to process the pending input buffer of clients that were
  * unblocked after a blocking operation. */
+// 在事件循环的beforeSleep()中调用这个函数。用于处理unblocked client中等待的请求。
 void processUnblockedClients(void) {
     listNode *ln;
     client *c;
 
     while (listLength(server.unblocked_clients)) {
+        // 遍历处理节点
         ln = listFirst(server.unblocked_clients);
         serverAssert(ln != NULL);
         c = ln->value;
@@ -131,12 +147,16 @@ void processUnblockedClients(void) {
          * is blocked again. Actually processInputBuffer() checks that the
          * client is not blocked before to proceed, but things may change and
          * the code is conceptually more correct this way. */
+        // 除非client又一次进入阻塞状态，否则这里处理input buffer中的数据。
+        // 事实上processInputBuffer()在处理前也是会检查client是否阻塞状态的，但是这里判断总没有错，万一processInputBuffer会改呢。
         if (!(c->flags & CLIENT_BLOCKED)) {
             /* If we have a queued command, execute it now. */
+            // 如果有一个可以执行的命令了，这里立即执行。
             if (processPendingCommandsAndResetClient(c) == C_ERR) {
                 continue;
             }
             /* Then process client if it has more data in it's buffer. */
+            // 如果请求buffer中还有待处理的数据，这里进行读取解析处理。
             if (c->querybuf && sdslen(c->querybuf) > 0) {
                 processInputBuffer(c);
             }
@@ -171,17 +191,22 @@ void queueClientForReprocessing(client *c) {
 
 /* Unblock a client calling the right function depending on the kind
  * of operation the client is blocking for. */
+// 对于client不同的block类型，调用不同的方法来解除阻塞。
 void unblockClient(client *c) {
     if (c->btype == BLOCKED_LIST ||
         c->btype == BLOCKED_ZSET ||
         c->btype == BLOCKED_STREAM) {
+        // 一些block命令会导致client阻塞，这里解除这类等待数据的阻塞
         unblockClientWaitingData(c);
     } else if (c->btype == BLOCKED_WAIT) {
+        // 等待同步复制，进入的阻塞
         unblockClientWaitingReplicas(c);
     } else if (c->btype == BLOCKED_MODULE) {
+        // 加载数据或加载模块，进入的阻塞
         if (moduleClientIsBlockedOnKeys(c)) unblockClientWaitingData(c);
         unblockClientFromModule(c);
     } else if (c->btype == BLOCKED_PAUSE) {
+        // client暂停进入的阻塞
         listDelNode(server.paused_clients,c->paused_list_node);
         c->paused_list_node = NULL;
     } else {
@@ -192,6 +217,9 @@ void unblockClient(client *c) {
      * we do not do it immediately after the command returns (when the
      * client got blocked) in order to be still able to access the argument
      * vector from module callbacks and updateStatsOnUnblock. */
+    // 重置client 命令参数、各种flags，从而可以开始下一轮的请求处理。
+    // 对于阻塞的命令，不能在命令返回时立即做这些操作，因为命令没执行完，还需要访问一些信息。
+    // BLOCKED_PAUSE类型还没执行命令，只是解除暂停，所以不做reset操作。
     if (c->btype != BLOCKED_PAUSE) {
         freeClientOriginalArgv(c);
         resetClient(c);
@@ -199,25 +227,32 @@ void unblockClient(client *c) {
 
     /* Clear the flags, and put the client in the unblocked list so that
      * we'll process new commands in its query buffer ASAP. */
+    // 清除阻塞clients的计数，清除当前client的block状态并加入unblocked_clients队列，使得能尽快处理。
     server.blocked_clients--;
     server.blocked_clients_by_type[c->btype]--;
     c->flags &= ~CLIENT_BLOCKED;
     c->btype = BLOCKED_NONE;
+    // 将该client移除timeout列表，该列表是用于超时判断的。这里说明阻塞时间已经到了，且没有超时。
     removeClientFromTimeoutTable(c);
+    // 将client加入到unblocked_clients队列，在beforesleep中会处理该队列中的client
     queueClientForReprocessing(c);
 }
 
 /* This function gets called when a blocked client timed out in order to
  * send it a reply of some kind. After this function is called,
  * unblockClient() will be called with the same client as argument. */
+// 当阻塞的client超时时，调用该函数向其发送回复。注意调用此函数后，还应该调用unblockClient()解除阻塞。
 void replyToBlockedClientTimedOut(client *c) {
     if (c->btype == BLOCKED_LIST ||
         c->btype == BLOCKED_ZSET ||
         c->btype == BLOCKED_STREAM) {
+        // 阻塞到某key上面，这里返回空的数组
         addReplyNullArray(c);
     } else if (c->btype == BLOCKED_WAIT) {
+        // 阻塞在WAIT命令，返回计算到同步完成的slaves数量
         addReplyLongLong(c,replicationCountAcksByOffset(c->bpop.reploffset));
     } else if (c->btype == BLOCKED_MODULE) {
+        // module加载阻塞client超时处理
         moduleBlockedClientTimedOut(c);
     } else {
         serverPanic("Unknown btype in replyToBlockedClientTimedOut().");
@@ -231,10 +266,14 @@ void replyToBlockedClientTimedOut(client *c) {
  *
  * The semantics is to send an -UNBLOCKED error to the client, disconnecting
  * it at the same time. */
+// 因为当前节点发生了一些变化，阻塞操作不再安全，所以这里批量unblock阻塞的客户端，
+// 例如，阻塞发生在master节点，但现在该节点将要变成其他节点的slave，显然阻塞的client都不再有效，所以需要调用这个函数来进行unblock。
+// 主要操作是向客户端发送-UNBLOCKED错误，同时断开连接。
 void disconnectAllBlockedClients(void) {
     listNode *ln;
     listIter li;
 
+    // 遍历所有的clients，如果是blocked状态则进行unblock。
     listRewind(server.clients,&li);
     while((ln = listNext(&li))) {
         client *c = listNodeValue(ln);
@@ -244,12 +283,16 @@ void disconnectAllBlockedClients(void) {
              * command processing will start from scratch, and the command will
              * be either executed or rejected. (unlike LIST blocked clients for
              * which the command is already in progress in a way. */
+            // 如果是client暂停引起的阻塞，这里不断开连接。
+            // 因为暂停结束时，这类client会从头开始解析，然后执行或拒绝该命令，不会有安全问题。
+            // 而其他blocked的client是在执行命令中阻塞，可能会有一直阻塞的风险。
             if (c->btype == BLOCKED_PAUSE)
                 continue;
 
             addReplyError(c,
                 "-UNBLOCKED force unblock from blocking operation, "
                 "instance state changed (master -> replica?)");
+            // 取消client的block，设置CLOSE_AFTER_REPLY状态，从而发送reply后关闭client。
             unblockClient(c);
             c->flags |= CLIENT_CLOSE_AFTER_REPLY;
         }
@@ -259,18 +302,24 @@ void disconnectAllBlockedClients(void) {
 /* Helper function for handleClientsBlockedOnKeys(). This function is called
  * when there may be clients blocked on a list key, and there may be new
  * data to fetch (the key is ready). */
+// handleClientsBlockedOnKeys()的帮助函数，用于处理阻塞于ready key上的clients。
 void serveClientsBlockedOnListKey(robj *o, readyList *rl) {
     /* We serve clients in the same order they blocked for
      * this key, from the first blocked to the last. */
+    // blocking_keys字典存储了[key->阻塞的clients列表]的映射。根据ready key查找对应的entry。
     dictEntry *de = dictFind(rl->db->blocking_keys,rl->key);
     if (de) {
+        // 取出阻塞在该key上的clients列表
         list *clients = dictGetVal(de);
         int numclients = listLength(clients);
 
+        // 按blocked的先后顺序来处理clients，总共迭代numclients次。
         while(numclients--) {
+            // 每次从队首拿client处理。
             listNode *clientnode = listFirst(clients);
             client *receiver = clientnode->value;
 
+            // 如果client阻塞类型不是LIST，我们将该client移到队尾，进入下一轮迭代。
             if (receiver->btype != BLOCKED_LIST) {
                 /* Put at the tail, so that at the next call
                  * we'll not run into it again. */
@@ -278,28 +327,37 @@ void serveClientsBlockedOnListKey(robj *o, readyList *rl) {
                 continue;
             }
 
+            // 从阻塞状态中获取目标list的key，以及pop和push元素的位置。
             robj *dstkey = receiver->bpop.target;
             int wherefrom = receiver->bpop.listpos.wherefrom;
             int whereto = receiver->bpop.listpos.whereto;
+            // 从源list的wherefrom处pop元素。
             robj *value = listTypePop(o, wherefrom);
 
             if (value) {
                 /* Protect receiver->bpop.target, that will be
                  * freed by the next unblockClient()
                  * call. */
+                // 保护dstkey对象，防止后面unblockClient()释放bpop.target（即dstkey）。
+                // 老代码unblockClient()紧跟这个之后，在serveClientBlockedOnList使用的前面，所以需要保护。
+                // 新代码unblockClient移到了后面，可以删除这个操作了。
                 if (dstkey) incrRefCount(dstkey);
 
                 monotime replyTimer;
                 elapsedStart(&replyTimer);
+                // 处理阻塞的client的操作
                 if (serveClientBlockedOnList(receiver,
                     rl->key,dstkey,rl->db,value,
                     wherefrom, whereto) == C_ERR)
                 {
                     /* If we failed serving the client we need
                      * to also undo the POP operation. */
+                    // 如果我们处理阻塞操作失败了，那么我们要还原之前的pop操作，即再把value push回去
                     listTypePush(o,value,wherefrom);
                 }
+                // 处理Unblock相关的统计
                 updateStatsOnUnblock(receiver, 0, elapsedUs(replyTimer));
+                // 解除client的阻塞
                 unblockClient(receiver);
 
                 if (dstkey) decrRefCount(dstkey);
@@ -310,12 +368,14 @@ void serveClientsBlockedOnListKey(robj *o, readyList *rl) {
         }
     }
 
+    // 如果处理后，list里面没有元素了，则从db中移除key。
     if (listTypeLength(o) == 0) {
         dbDelete(rl->db,rl->key);
         notifyKeyspaceEvent(NOTIFY_GENERIC,"del",rl->key,rl->db->id);
     }
     /* We don't call signalModifiedKey() as it was already called
      * when an element was pushed on the list. */
+    // 我们这里不再调用signalModifiedKey()，因为在前面PUSH元素到list的时候已经调用该函数处理过了。
 }
 
 /* Helper function for handleClientsBlockedOnKeys(). This function is called
@@ -541,7 +601,15 @@ void serveClientsBlockedOnKeyByModule(readyList *rl) {
  * other side of the linked list. However as long as the key starts to
  * be used only for a single type, like virtually any Redis application will
  * do, the function is already fair. */
+// 每次单个命令、MULTI/EXEC块、Lua脚本执行完成时，都应该调用这个函数来处理阻塞在lists、streams、sorted sets上的clients。
+// 所有的阻塞clients的keys中，当某个key通过写操作加入了新元素时，相应的会被加入到server.ready_keys列表中，从而这个函数来进行处理。
+// 注意：这个函数处理BLMOVE时可能反复迭代，因为可能有client阻塞在BLMOVE的PUSH端。对于这样的情况，我们会一直处理直到ready_keys为空。
+
+// 这个函数通常来说是公平的，以FIFO方式来处理clients。
+// 但是在某些边界条件下会违反这种公平性，如有两个clients同时阻塞在sorted set和list上，但阻塞的key是相同的（client端很奇怪的操作，要避免）。
+// 因为不匹配（相同的key，但阻塞类型不匹配），client会被移动到链表另一端。不过只要单个key只用于一种类型，那么这个方法就是公平的。
 void handleClientsBlockedOnKeys(void) {
+    // 只要ready_keys列表不为空，则一直遍历处理。
     while(listLength(server.ready_keys) != 0) {
         list *l;
 
@@ -549,15 +617,21 @@ void handleClientsBlockedOnKeys(void) {
          * locally. This way as we run the old list we are free to call
          * signalKeyAsReady() that may push new elements in server.ready_keys
          * when handling clients blocked into BLMOVE. */
+        // 将server.ready_keys指向新的链表，并保存当前ready keys作为遍历处理。
+        // 这样我们处理老的ready keys列表时，如果需要可以自由调用signalKeyAsReady()往server.ready_keys加入新元素。
+        // 如处理BLMOVE阻塞时可能唤醒PUSH端的阻塞，从而再次加入到ready_keys中。
         l = server.ready_keys;
         server.ready_keys = listCreate();
 
+        // 遍历老的ready keys列表
         while(listLength(l) != 0) {
+            // 取第一个元素
             listNode *ln = listFirst(l);
             readyList *rl = ln->value;
 
             /* First of all remove this key from db->ready_keys so that
              * we can safely call signalKeyAsReady() against this key. */
+            // 首先从db->ready_keys字典中移除这个key，这样可以保证后面安全的调用signalKeyAsReady()来加入该key。
             dictDelete(rl->db->ready_keys,rl->key);
 
             /* Even if we are not inside call(), increment the call depth
@@ -567,13 +641,17 @@ void handleClientsBlockedOnKeys(void) {
              * that) without the risk of it being freed in the second
              * lookup, invalidating the first one.
              * See https://github.com/redis/redis/pull/6554. */
+            // 即使不在call()里面，我们这里也增加call深度，从而确保执行ready key的client在操作期间，处理key过期使用固定的缓存时间。
+            // 这样我们就可以多次访问同一个key，不用担心后面访问时会过期key，而使前面拿到的key失效。
             server.fixed_time_expire++;
             updateCachedTime(0);
 
             /* Serve clients blocked on the key. */
+            // 根据ready key从db中获取value。
             robj *o = lookupKeyWrite(rl->db,rl->key);
 
             if (o != NULL) {
+                // 根据value对象的类型，具体使用对应的方法来处理阻塞的client。
                 if (o->type == OBJ_LIST)
                     serveClientsBlockedOnListKey(o,rl);
                 else if (o->type == OBJ_ZSET)
@@ -583,15 +661,19 @@ void handleClientsBlockedOnKeys(void) {
                 /* We want to serve clients blocked on module keys
                  * regardless of the object type: we don't know what the
                  * module is trying to accomplish right now. */
+                // 无论对象是什么类型，我们都希望处理blocked在module keys上的client，因为我们现在还不知道module在尝试处理什么。
                 serveClientsBlockedOnKeyByModule(rl);
             }
+            // 一个key处理完了，call深度还原。
             server.fixed_time_expire--;
 
             /* Free this item. */
+            // 释放该ready key，并从列表中移除。
             decrRefCount(rl->key);
             zfree(rl);
             listDelNode(l,ln);
         }
+        // 如果老的ready keys列表处理完了，我们需要释放整个列表。
         listRelease(l); /* We have the new list on place at this point. */
     }
 }
@@ -628,6 +710,7 @@ void blockForKeys(client *c, int btype, robj **keys, int numkeys, mstime_t timeo
     list *l;
     int j;
 
+    // 设置client的blocked相关状态属性
     c->bpop.timeout = timeout;
     c->bpop.target = target;
 
@@ -635,14 +718,17 @@ void blockForKeys(client *c, int btype, robj **keys, int numkeys, mstime_t timeo
 
     if (target != NULL) incrRefCount(target);
 
+    // 对于传入的所有keys，我们client都需要加入对应key的阻塞列表，这里遍历keys处理。
     for (j = 0; j < numkeys; j++) {
         /* Allocate our bkinfo structure, associated to each key the client
          * is blocked for. */
+        // 对于该key构建bkinfo结构
         bkinfo *bki = zmalloc(sizeof(*bki));
         if (btype == BLOCKED_STREAM)
             bki->stream_id = ids[j];
 
         /* If the key already exists in the dictionary ignore it. */
+        // 将当前阻塞的key-bki，加入到c->bpop.keys hash表中，如果阻塞的keys表中已经存在该key了，则跳过。
         if (dictAdd(c->bpop.keys,keys[j],bki) != DICT_OK) {
             zfree(bki);
             continue;
@@ -650,21 +736,27 @@ void blockForKeys(client *c, int btype, robj **keys, int numkeys, mstime_t timeo
         incrRefCount(keys[j]);
 
         /* And in the other "side", to map keys -> clients */
+        // 前面将key加入到cleint->keys中。这里我们还需要将client加入到key->clients表中。
         de = dictFind(c->db->blocking_keys,keys[j]);
         if (de == NULL) {
             int retval;
 
             /* For every key we take a list of clients blocked for it */
+            // 对于每个key，因为可能阻塞多个client，所以这里创建新的list来存储cliets。
             l = listCreate();
+            // 将新 key->新list 加入到c->db->blocking_keys中。
             retval = dictAdd(c->db->blocking_keys,keys[j],l);
             incrRefCount(keys[j]);
             serverAssertWithInfo(c,keys[j],retval == DICT_OK);
         } else {
+            // 如果该key已经在blocking_keys中存在了，我们只需要取出来用就可以了
             l = dictGetVal(de);
         }
+        // 将当前client加入到阻塞于key的clients列表中，并将bki中的指针指向列表中该client节点。
         listAddNodeTail(l,c);
         bki->listnode = listLast(l);
     }
+    // 将当前client设置为阻塞状态。
     blockClient(c,btype);
 }
 
@@ -723,10 +815,13 @@ static int getBlockedTypeByType(int type) {
  * made by a script or in the context of MULTI/EXEC.
  *
  * The list will be finally processed by handleClientsBlockedOnKeys() */
+// 如果对于指定的key，有client正阻塞等待key的数据，这个函数将会把这个key放入到server.ready_keys列表中。
+// 注意db->ready_keys是一个hash表，所以如果我们重复加入key是没有影响的。
 void signalKeyAsReady(redisDb *db, robj *key, int type) {
     readyList *rl;
 
     /* Quick returns. */
+    // 检查blocked type，如果该类型不能被blocked，则不需要后面的处理，直接return。
     int btype = getBlockedTypeByType(type);
     if (btype == BLOCKED_NONE) {
         /* The type can never block. */
@@ -738,16 +833,22 @@ void signalKeyAsReady(redisDb *db, robj *key, int type) {
          * by BLOCKED_MODULE, even if the intention is to wake up by normal
          * types (list, zset, stream), so we need to check that there are no
          * blocked modules before we do a quick return here. */
+        // 如果没有client阻塞在该类型上，我们可以尽快返回。
+        // 注意：即使我们打算使用正常阻塞类型（list、zset、stream）来唤醒，阻塞的modules还是使用BLOCKED_MODULE来表示的。
+        // 所以我们这里想要尽快返回，不仅要检查该类型本身没有阻塞的clients，还要检查MODULE类型也没有阻塞的clients。
         return;
     }
 
     /* No clients blocking for this key? No need to queue it. */
+    // 在db->blocking_keys字典中查找该key，如果没有说明没有client阻塞在该key上，不需要处理，直接返回。
     if (dictFind(db->blocking_keys,key) == NULL) return;
 
     /* Key was already signaled? No need to queue it again. */
+    // 如果该key已经在db->ready_keys中了，说明之前加入过，不需要再重复加入了，直接返回。
     if (dictFind(db->ready_keys,key) != NULL) return;
 
     /* Ok, we need to queue this key into server.ready_keys. */
+    // 将key加入到server.ready_keys列表中。
     rl = zmalloc(sizeof(*rl));
     rl->key = key;
     rl->db = db;
@@ -757,6 +858,7 @@ void signalKeyAsReady(redisDb *db, robj *key, int type) {
     /* We also add the key in the db->ready_keys dictionary in order
      * to avoid adding it multiple times into a list with a simple O(1)
      * check. */
+    // 同时也将key加入到db->ready_keys字典中，O(1)方式检查key是否已经加入ready列表，避免重复加入。
     incrRefCount(key);
     serverAssert(dictAdd(db->ready_keys,key,NULL) == DICT_OK);
 }

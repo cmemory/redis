@@ -47,12 +47,15 @@
 /* Unused arguments generate annoying warnings... */
 #define DICT_NOTUSED(V) ((void) V)
 
+// dictEntry组成list，构成一个hashbucket
 typedef struct dictEntry {
+    // 包含key、v、next指针
     void *key;
     union {
         void *val;
         uint64_t u64;
         int64_t s64;
+        // double数据目前只在zset的union中的临时dict使用。正常zset通过val指针指向skiplist中score元素处理的，没有使用这个。
         double d;
     } v;
     struct dictEntry *next;
@@ -71,17 +74,26 @@ typedef struct dictType {
 /* This is our hash table structure. Every dictionary has two of this as we
  * implement incremental rehashing, for the old to the new table. */
 typedef struct dictht {
+    // dictEntry* 类型的数组，hash获取对应下标，然后元素插入对应下标的dictEntry链表中。
     dictEntry **table;
+    // size是2的幂次数，hashslot数量，并不是存储元素的个数，注意与used区分
     unsigned long size;
+    // sizemask=size-1，用于快速定位元素的位置
     unsigned long sizemask;
+    // dict中存储的元素个数
     unsigned long used;
 } dictht;
 
 typedef struct dict {
+    // dict类型，定义了dict entry的一些操作
     dictType *type;
     void *privdata;
+    // 两个hash表，rehash使用
     dictht ht[2];
+    // rehashidx == -1时表示没有在rehash
     long rehashidx; /* rehashing not in progress if rehashidx == -1 */
+    // 是否暂停rehas，为0表示没有暂停，当大于0时表示暂停，小于0表示代码错误。
+    // pauserehash表示当前dict中正在使用的安全迭代器数量。当有安全迭代器使用时，我们需要暂停rehash，防止数据被重复读遍历？
     int16_t pauserehash; /* If >0 rehashing is paused (<0 indicates coding error) */
 } dict;
 
@@ -89,12 +101,18 @@ typedef struct dict {
  * dictAdd, dictFind, and other functions against the dictionary even while
  * iterating. Otherwise it is a non safe iterator, and only dictNext()
  * should be called while iterating. */
+// 如果safe字段设置为1表示这是一个安全的迭代器，在迭代时可以调用dictAdd,dictFind等函数进行操作。
+// 相反如果safe字段为0表示不是安全的迭代器，迭代期间只能调用dictNext()方法。
 typedef struct dictIterator {
+    // 迭代器对应的dict
     dict *d;
+    // 当前bucket索引
     long index;
     int table, safe;
+    // 当前迭代元素和下一个元素。
     dictEntry *entry, *nextEntry;
     /* unsafe iterator fingerprint for misuse detection. */
+    // 不安全迭代器的指纹，用于检测释放迭代期间滥用了方法。
     long long fingerprint;
 } dictIterator;
 

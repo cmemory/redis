@@ -1447,6 +1447,10 @@ void luaMaskCountHook(lua_State *lua, lua_Debug *ar) {
          * we need to mask the client executing the script from the event loop.
          * If we don't do that the client may disconnect and could no longer be
          * here when the EVAL command will return. */
+        // 一旦脚本执行超时，我们重新进入event loop，允许其他client执行SCRIPT KILL或SHUTDOWN NOSAVE指令。
+        // 因此我们需要在event loop中屏蔽掉client执行脚本操作。
+        // 即去掉client conn的读写handler，另外将client设置为保护状态，防止被其他地方立即free。
+        // 如果我们不这样做，client可能因为一些原因断开连接，导致处理完event回来后，没有client了EVAL命令直接返回，无法继续处理了。
         protectClient(server.lua_caller);
     }
     if (server.lua_timedout) processEventsWhileBlocked();
@@ -1993,6 +1997,7 @@ void ldbEndSession(client *c) {
 /* If the specified pid is among the list of children spawned for
  * forked debugging sessions, it is removed from the children list.
  * If the pid was found non-zero is returned. */
+// 如果指定的pid是用于调试而fork的子进程id的话，我们从子进程列表中移除。
 int ldbRemoveChild(pid_t pid) {
     listNode *ln = listSearchKey(ldb.children,(void*)(unsigned long)pid);
     if (ln) {

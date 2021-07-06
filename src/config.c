@@ -644,12 +644,17 @@ loaderr:
  * Both filename and options can be NULL, in such a case are considered
  * empty. This way loadServerConfig can be used to just load a file or
  * just load a string. */
+// 加载不同来源的运行参数。
+// 先读文件的配置字符串写入config，再读stdin的配置字符串追加到config，最后读命令行options字符串追加到config。
+// 这样我们保证同一个配置优先高的放后面，从而解析时可以用优先级高的替换前面优先级低的配置。
+// 这几个参数都可能为空，这样我们只处理我们获取到的参数就可以了。
 void loadServerConfig(char *filename, char config_from_stdin, char *options) {
     sds config = sdsempty();
     char buf[CONFIG_MAX_LINE+1];
     FILE *fp;
 
     /* Load the file content */
+    // 先读取配置文件。sdscat追加到config中
     if (filename) {
         if ((fp = fopen(filename,"r")) == NULL) {
             serverLog(LL_WARNING,
@@ -662,6 +667,7 @@ void loadServerConfig(char *filename, char config_from_stdin, char *options) {
         fclose(fp);
     }
     /* Append content from stdin */
+    // 在将stdin读取的配置内容追加到config中
     if (config_from_stdin) {
         serverLog(LL_WARNING,"Reading config from stdin");
         fp = stdin;
@@ -670,10 +676,12 @@ void loadServerConfig(char *filename, char config_from_stdin, char *options) {
     }
 
     /* Append the additional options */
+    // 最后将options的配置追加到config中
     if (options) {
         config = sdscat(config,"\n");
         config = sdscat(config,options);
     }
+    // 从字符解析配置。
     loadServerConfigFromString(config);
     sdsfree(config);
 }

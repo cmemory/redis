@@ -38,6 +38,7 @@
 
 /* ===================== Creation and parsing of objects ==================== */
 
+// 使用ptr指向的数据，创建新的obj对象。这里默认是RAW编码，调用者要按需自己设置
 robj *createObject(int type, void *ptr) {
     robj *o = zmalloc(sizeof(*o));
     o->type = type;
@@ -47,6 +48,7 @@ robj *createObject(int type, void *ptr) {
 
     /* Set the LRU to the current lruclock (minutes resolution), or
      * alternatively the LFU counter. */
+    // 设置LRU和LFU
     if (server.maxmemory_policy & MAXMEMORY_FLAG_LFU) {
         o->lru = (LFUGetTimeInMinutes()<<8) | LFU_INIT_VAL;
     } else {
@@ -81,14 +83,20 @@ robj *createRawStringObject(const char *ptr, size_t len) {
 /* Create a string object with encoding OBJ_ENCODING_EMBSTR, that is
  * an object where the sds string is actually an unmodifiable string
  * allocated in the same chunk as the object itself. */
+// 创建一个EMBSTR编码的字符串对象，sds数据与字符串对象存储在连续的内存空间中，减少空间浪费，并更好的利用缓存。
 robj *createEmbeddedStringObject(const char *ptr, size_t len) {
+    // 分配robj空间，robj的空间与sds字符串连续存储的。
     robj *o = zmalloc(sizeof(robj)+sizeof(struct sdshdr8)+len+1);
+    // o+1这里表示前进一个obj对象。指向sds head位置。
     struct sdshdr8 *sh = (void*)(o+1);
 
+    // 设置编码
     o->type = OBJ_STRING;
     o->encoding = OBJ_ENCODING_EMBSTR;
+    // ptr指向sds数据。
     o->ptr = sh+1;
     o->refcount = 1;
+    // 设置LRU/LFU信息
     if (server.maxmemory_policy & MAXMEMORY_FLAG_LFU) {
         o->lru = (LFUGetTimeInMinutes()<<8) | LFU_INIT_VAL;
     } else {
@@ -101,6 +109,7 @@ robj *createEmbeddedStringObject(const char *ptr, size_t len) {
     if (ptr == SDS_NOINIT)
         sh->buf[len] = '\0';
     else if (ptr) {
+        // 字符串数据copy到当前对象sds中。
         memcpy(sh->buf,ptr,len);
         sh->buf[len] = '\0';
     } else {
@@ -116,6 +125,10 @@ robj *createEmbeddedStringObject(const char *ptr, size_t len) {
  * The current limit of 44 is chosen so that the biggest string object
  * we allocate as EMBSTR will still fit into the 64 byte arena of jemalloc. */
 #define OBJ_ENCODING_EMBSTR_SIZE_LIMIT 44
+// 创建一个字符串对象，如果字符串长度<=44时，使用EMBSTR编码。
+// https://www.cnblogs.com/sunchong/p/11924295.html
+// 一般内存分配64字节，robj头占用16字节，embstr使用的sdshdr8，sdshdr8头占用3字节，所以整体头占用19字节，另外结束符'\0'占1字节。
+// 因而连续空间存储时，数据最多可以存储64-19-1=44字节。
 robj *createStringObject(const char *ptr, size_t len) {
     if (len <= OBJ_ENCODING_EMBSTR_SIZE_LIMIT)
         return createEmbeddedStringObject(ptr,len);
@@ -130,6 +143,8 @@ robj *createStringObject(const char *ptr, size_t len) {
  * integer, because the object is going to be used as value in the Redis key
  * space (for instance when the INCR command is used), so we want LFU/LRU
  * values specific for each key. */
+// 基于long long类型数字创建一个字符串对象。可以的话直接使用共享的integer对象，或者会返回一个新的integer编码的对象。
+// 如果valueobj非0，则表示是构建value的对象，我们不可以使用共享对象，因为每个value都会有自己的LFU/LRU信息。
 robj *createStringObjectFromLongLongWithOptions(long long value, int valueobj) {
     robj *o;
 
@@ -138,19 +153,27 @@ robj *createStringObjectFromLongLongWithOptions(long long value, int valueobj) {
     {
         /* If the maxmemory policy permits, we can still return shared integers
          * even if valueobj is true. */
+        // 即使指定valueobj非0，我们这里也判断下maxmemory及内存淘汰策略。如果不需要LRU/LFU信息，则我们是可以使用共享对象的。
         valueobj = 0;
     }
 
     if (value >= 0 && value < OBJ_SHARED_INTEGERS && valueobj == 0) {
+        // 如果可以使用共享数字遍历，则直接使用。
         incrRefCount(shared.integers[value]);
         o = shared.integers[value];
     } else {
+        // 不能使用共享变量，则这里创建INT编码的对象返回。
         if (value >= LONG_MIN && value <= LONG_MAX) {
             o = createObject(OBJ_STRING, NULL);
             o->encoding = OBJ_ENCODING_INT;
             o->ptr = (void*)((long)value);
         } else {
-            o = createObject(OBJ_STRING,sdsfromlonglong(value));
+            // 这里为什么不用createEmbeddedStringObject呢，long long最长不超过20。
+            // 64位系统long和long long都是占用8字节。而32位系统long是4字节，long long是8字节。所以ptr可直接存储值的范围是根据系统定的。
+            sds vstr = sdsfromlonglong(value);
+            o = createEmbeddedStringObject(vstr, sdslen(vstr));
+            sdsfree(vstr);
+            // o = createObject(OBJ_STRING,sdsfromlonglong(value));
         }
     }
     return o;
@@ -225,6 +248,7 @@ robj *createZiplistObject(void) {
     return o;
 }
 
+// 创建Set对象，使用hash表存储。
 robj *createSetObject(void) {
     dict *d = dictCreate(&setDictType,NULL);
     robj *o = createObject(OBJ_SET,d);
@@ -232,6 +256,7 @@ robj *createSetObject(void) {
     return o;
 }
 
+// 创建Set对象，使用intset存储
 robj *createIntsetObject(void) {
     intset *is = intsetNew();
     robj *o = createObject(OBJ_SET,is);
@@ -239,6 +264,7 @@ robj *createIntsetObject(void) {
     return o;
 }
 
+// 创建新的hash对象，最开始空对象使用的是ziplist编码，后面当k/v对超过512，或k/v字符串有超过64字节时，我们会转换为hash表存储。
 robj *createHashObject(void) {
     unsigned char *zl = ziplistNew();
     robj *o = createObject(OBJ_HASH, zl);
@@ -246,6 +272,7 @@ robj *createHashObject(void) {
     return o;
 }
 
+// 创建跳表结构编码的zset对象。跳表用于排序范围处理，dict用于快速ele查询。
 robj *createZsetObject(void) {
     zset *zs = zmalloc(sizeof(*zs));
     robj *o;
@@ -257,6 +284,7 @@ robj *createZsetObject(void) {
     return o;
 }
 
+// 创建ziplist编码的zset对象。
 robj *createZsetZiplistObject(void) {
     unsigned char *zl = ziplistNew();
     robj *o = createObject(OBJ_ZSET,zl);
@@ -386,6 +414,7 @@ void decrRefCountVoid(void *o) {
 
 int checkType(client *c, robj *o, int type) {
     /* A NULL is considered an empty key */
+    // NULL表示一个空的key，不作为type err处理。
     if (o && o->type != type) {
         addReplyErrorObject(c,shared.wrongtypeerr);
         return 1;
@@ -411,15 +440,19 @@ int isObjectRepresentableAsLongLong(robj *o, long long *llval) {
  * in case there is more than 10% of free space at the end of the SDS
  * string. This happens because SDS strings tend to overallocate to avoid
  * wasting too much time in allocations when appending to the string. */
+// 优化字符串对象内的SDS字符串以减少空间使用，当RAW编码且sds可用空间大于10%时，这里移除尾部未使用空间。
+// 因为sds字符串倾向于分配更多的空间，避免在字符串追加时过多空间分配影响效率，所以会导致sds可能会有大量未使用空间。
 void trimStringObjectIfNeeded(robj *o) {
     if (o->encoding == OBJ_ENCODING_RAW &&
         sdsavail(o->ptr) > sdslen(o->ptr)/10)
     {
+        // RAW编码且可用空间大于10%时才处理
         o->ptr = sdsRemoveFreeSpace(o->ptr);
     }
 }
 
 /* Try to encode a string object in order to save space */
+// 尝试对字符串对象进行编码，从而节省空间。因为最开始解析命令时所有的对象都是用buf中sds字符串创建的，编码都是raw。
 robj *tryObjectEncoding(robj *o) {
     long value;
     sds s = o->ptr;
@@ -429,42 +462,58 @@ robj *tryObjectEncoding(robj *o) {
      * in this function. Other types use encoded memory efficient
      * representations but are handled by the commands implementing
      * the type. */
+    // 确保这里我们只处理string类型的编码。其他类型的高效内存编码，他们类型自己处理。
     serverAssertWithInfo(NULL,o,o->type == OBJ_STRING);
 
     /* We try some specialized encoding only for objects that are
      * RAW or EMBSTR encoded, in other words objects that are still
      * in represented by an actually array of chars. */
+    // 我们只对RAW或EMBSTR编码类型字符串尝试进行特殊编码处理。即对存储为字符数组类型的字符串尝试进行特殊编码。
+    // 所以如果当前不是RAW、EMBSTR编码，直接返回。
     if (!sdsEncodedObject(o)) return o;
 
     /* It's not safe to encode shared objects: shared objects can be shared
      * everywhere in the "object space" of Redis and may end in places where
      * they are not handled. We handle them only as values in the keyspace. */
+    // 对于共享的对象我们这里不再做特殊编码处理。我们只处理数据空间作为value存储的对象。
      if (o->refcount > 1) return o;
 
     /* Check if we can represent this string as a long integer.
      * Note that we are sure that a string larger than 20 chars is not
      * representable as a 32 nor 64 bit integer. */
+    // 检查该字符串是否可以解析为数字来存储。注意对于32或64bit的数字，字符串表示形式最长不超过20个字符。
     len = sdslen(s);
     if (len <= 20 && string2l(s,len,&value)) {
         /* This object is encodable as a long. Try to use a shared object.
          * Note that we avoid using shared integers when maxmemory is used
          * because every object needs to have a private LRU field for the LRU
          * algorithm to work well. */
+        // 只有长度不超过20的字符串，我们才尝试转成数字。另外对于转成的数字，我们尝试使用共享的数字对象（0～9999的会在初始时创建共享对象）。
+        // 注意当有使用maxmemory参数设置最大内存用量时，如果我们淘汰策略为LRU/LFU，则不能使用共享对象。
+        // 因为此时对于每个value都有自己的LRU/LFU值，用于我们淘汰处理。
         if ((server.maxmemory == 0 ||
             !(server.maxmemory_policy & MAXMEMORY_FLAG_NO_SHARED_INTEGERS)) &&
             value >= 0 &&
             value < OBJ_SHARED_INTEGERS)
         {
+            // 没有设置maxmemory或者不是LRU/LFU策略时，我们才考虑使用共享变量（0-9999）。
+            // 使用共享变量对象，这里释放原对象，并对共享对象增加引用计数。
             decrRefCount(o);
             incrRefCount(shared.integers[value]);
             return shared.integers[value];
         } else {
+            // 不能使用共享变量，需要自行处理
             if (o->encoding == OBJ_ENCODING_RAW) {
+                // raw类型，可以复用原对象，释放o->ptr指向的字符串，然后将数字直接作为指针值赋值给o->ptr。
                 sdsfree(o->ptr);
                 o->encoding = OBJ_ENCODING_INT;
                 o->ptr = (void*) value;
                 return o;
             } else if (o->encoding == OBJ_ENCODING_EMBSTR) {
+                // 这个改动见PR：https://github.com/redis/redis/pull/6261
+                // 对于EMBSTR编码，不能直接赋值给o->ptr。
+                // 因为o->ptr指向一段连续的空间，如果数字直接赋值给o->ptr，会导致后面空间无法释放。
+                // 所以我们这里释放对象，并创用数字建新的字符串对象，重新创建得到的会是INT编码的对象。
                 decrRefCount(o);
                 return createStringObjectFromLongLongForValue(value);
             }
@@ -475,9 +524,12 @@ robj *tryObjectEncoding(robj *o) {
      * try the EMBSTR encoding which is more efficient.
      * In this representation the object and the SDS string are allocated
      * in the same chunk of memory to save space and cache misses. */
+    // 如果不能用INT表示，则到这里检查字符串长度是否小于44，即是否可以使用EMBST来编码。
+    // EMBST编码使得对象和字符串被分配在同一个内存块中，从而可以节省空间，并且更好的利用缓存（因为一般缓存块也是64B）。
     if (len <= OBJ_ENCODING_EMBSTR_SIZE_LIMIT) {
         robj *emb;
 
+        // 如果编码是EMBSTR，直接返回；否则我们释放当前对象，并利用原字符串重新创建EMBSTR对象返回。
         if (o->encoding == OBJ_ENCODING_EMBSTR) return o;
         emb = createEmbeddedStringObject(s,sdslen(s));
         decrRefCount(o);
@@ -493,17 +545,22 @@ robj *tryObjectEncoding(robj *o) {
      * We do that only for relatively large strings as this branch
      * is only entered if the length of the string is greater than
      * OBJ_ENCODING_EMBSTR_SIZE_LIMIT. */
+    // 我们不能编码该对象。这里做最后的尝试，当该对象的sds还有大于10%的空间没使用时，trim掉，尽可能减少内存使用。
+    // 我们仅对较大的字符串对象这样处理，因为只有长度大于OBJ_ENCODING_EMBSTR_SIZE_LIMIT的字符串才会执行到这里。
     trimStringObjectIfNeeded(o);
 
     /* Return the original object. */
+    // 返回原始对象
     return o;
 }
 
 /* Get a decoded version of an encoded object (returned as a new object).
  * If the object is already raw-encoded just increment the ref count. */
+// 获取编码对象的解码数据（作为新对象返回）。如果对象已经是字符串编码了，只需增加引用计数。只能处理字符串。
 robj *getDecodedObject(robj *o) {
     robj *dec;
 
+    // 原始编码，增加引用返回。
     if (sdsEncodedObject(o)) {
         incrRefCount(o);
         return o;
@@ -511,10 +568,12 @@ robj *getDecodedObject(robj *o) {
     if (o->type == OBJ_STRING && o->encoding == OBJ_ENCODING_INT) {
         char buf[32];
 
+        // 编码为INT，需要将数字转为字符串对象返回。
         ll2string(buf,32,(long)o->ptr);
         dec = createStringObject(buf,strlen(buf));
         return dec;
     } else {
+        // 只支持字符串类型
         serverPanic("Unknown encoding type");
     }
 }
@@ -587,6 +646,9 @@ int equalStringObjects(robj *a, robj *b) {
     }
 }
 
+// 获取字符串对象的长度。
+// 对于字符串sds的编码，直接调sdslen获取。
+// 对于数字int存储，需要看int格式化成10进制字符串时所占字符数。
 size_t stringObjectLen(robj *o) {
     serverAssertWithInfo(NULL,o,o->type == OBJ_STRING);
     if (sdsEncodedObject(o)) {
@@ -664,16 +726,21 @@ int getLongDoubleFromObjectOrReply(client *c, robj *o, long double *target, cons
     return C_OK;
 }
 
+// 从obj对象中获取数字
 int getLongLongFromObject(robj *o, long long *target) {
     long long value;
 
     if (o == NULL) {
+        // 对象为NULL，返回0
         value = 0;
     } else {
+        // 数字类型是用string存储的。所以调用这个函数处理的，肯定应该是string类型的对象。
         serverAssertWithInfo(NULL,o,o->type == OBJ_STRING);
         if (sdsEncodedObject(o)) {
+            // 如果是sds字符串编码，则我们要将字符串转为数字。
             if (string2ll(o->ptr,sdslen(o->ptr),&value) == 0) return C_ERR;
         } else if (o->encoding == OBJ_ENCODING_INT) {
+            // 如果是直接INT编码，即直接存储在指针位置，则直接强转就可以了。
             value = (long)o->ptr;
         } else {
             serverPanic("Unknown string encoding");
@@ -683,6 +750,7 @@ int getLongLongFromObject(robj *o, long long *target) {
     return C_OK;
 }
 
+// 解析obj为Long Long整数，出错回复msg
 int getLongLongFromObjectOrReply(client *c, robj *o, long long *target, const char *msg) {
     long long value;
     if (getLongLongFromObject(o, &value) != C_OK) {
@@ -697,6 +765,7 @@ int getLongLongFromObjectOrReply(client *c, robj *o, long long *target, const ch
     return C_OK;
 }
 
+// 解析obj为Long整数，出错回复msg
 int getLongFromObjectOrReply(client *c, robj *o, long *target, const char *msg) {
     long long value;
 
@@ -713,6 +782,7 @@ int getLongFromObjectOrReply(client *c, robj *o, long *target, const char *msg) 
     return C_OK;
 }
 
+// 解析obj为Long整数，如果不在指定范围内，返回err msg
 int getRangeLongFromObjectOrReply(client *c, robj *o, long min, long max, long *target, const char *msg) {
     if (getLongFromObjectOrReply(c, o, target, msg) != C_OK) return C_ERR;
     if (*target < min || *target > max) {
@@ -726,6 +796,7 @@ int getRangeLongFromObjectOrReply(client *c, robj *o, long min, long max, long *
     return C_OK;
 }
 
+// 解析obj为正数，否则返回msg
 int getPositiveLongFromObjectOrReply(client *c, robj *o, long *target, const char *msg) {
     if (msg) {
         return getRangeLongFromObjectOrReply(c, o, 0, LONG_MAX, target, msg);
@@ -734,6 +805,7 @@ int getPositiveLongFromObjectOrReply(client *c, robj *o, long *target, const cha
     }
 }
 
+// 解析obj为Int整数，否则返回msg
 int getIntFromObjectOrReply(client *c, robj *o, int *target, const char *msg) {
     long value;
 
@@ -744,6 +816,7 @@ int getIntFromObjectOrReply(client *c, robj *o, int *target, const char *msg) {
     return C_OK;
 }
 
+// 获取编码的字符串名字
 char *strEncoding(int encoding) {
     switch(encoding) {
     case OBJ_ENCODING_RAW: return "raw";

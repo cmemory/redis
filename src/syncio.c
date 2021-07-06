@@ -46,6 +46,7 @@
  * done within 'timeout' milliseconds the operation succeeds and 'size' is
  * returned. Otherwise the operation fails, -1 is returned, and an unspecified
  * partial write could be performed against the file descriptor. */
+// 将指定ptr的数据写入fd，不超时且完全写完则返回size；否则就失败返回-1，可能会有部分数据写入fd，具体数量未知。
 ssize_t syncWrite(int fd, char *ptr, ssize_t size, long long timeout) {
     ssize_t nwritten, ret = size;
     long long start = mstime();
@@ -58,17 +59,23 @@ ssize_t syncWrite(int fd, char *ptr, ssize_t size, long long timeout) {
 
         /* Optimistically try to write before checking if the file descriptor
          * is actually writable. At worst we get EAGAIN. */
+        // 乐观的直接写，不check是否可写，最坏情况get EAGAIN err
         nwritten = write(fd,ptr,size);
         if (nwritten == -1) {
             if (errno != EAGAIN) return -1;
         } else {
+            // 写了nwritten字节，这里ptr指针执行下一轮写的位置，size需要减去nwritten数。
             ptr += nwritten;
             size -= nwritten;
         }
+        // 全部写完了，返回总的写入数
         if (size == 0) return ret;
 
         /* Wait */
+        // 一次write结束，可能缓冲写满，fd暂时不可写，需要等待fd可写，同步等待。
+        // 等待事件是前面计算的wait，即距离超时还剩的时间。
         aeWait(fd,AE_WRITABLE,wait);
+        // fd可写了，等待结束，计算是否超时。超时则直接返回err，没超时则计算剩余时间。
         elapsed = mstime() - start;
         if (elapsed >= timeout) {
             errno = ETIMEDOUT;
@@ -82,6 +89,8 @@ ssize_t syncWrite(int fd, char *ptr, ssize_t size, long long timeout) {
  * within 'timeout' milliseconds the operation succeed and 'size' is returned.
  * Otherwise the operation fails, -1 is returned, and an unspecified amount of
  * data could be read from the file descriptor. */
+// 同步读数据。失败时，可能有未知数量的数据被读取出来。
+// 从fd中读size数据到ptr中。
 ssize_t syncRead(int fd, char *ptr, ssize_t size, long long timeout) {
     ssize_t nread, totread = 0;
     long long start = mstime();
@@ -122,6 +131,9 @@ ssize_t syncRead(int fd, char *ptr, ssize_t size, long long timeout) {
  *
  * On success the number of bytes read is returned, otherwise -1.
  * On success the string is always correctly terminated with a 0 byte. */
+// 读取一行。每个字节读取时间不超过timeout。
+// 两个限制：行限制，字符串读取最大长度限制。要么读一行，要么读size后返回。最终读取的数据作为一个字符串。
+// 成功时返回读取的字节数，且读的字符串总是以'\0'结束。
 ssize_t syncReadLine(int fd, char *ptr, ssize_t size, long long timeout) {
     ssize_t nread = 0;
 
@@ -129,12 +141,16 @@ ssize_t syncReadLine(int fd, char *ptr, ssize_t size, long long timeout) {
     while(size) {
         char c;
 
+        // 每次读1字节
         if (syncRead(fd,&c,1,timeout) == -1) return -1;
         if (c == '\n') {
+            // 如果遇到'\n'，添加'\0'作为字符串结束
             *ptr = '\0';
+            // 处理'\r\n'结束符
             if (nread && *(ptr-1) == '\r') *(ptr-1) = '\0';
             return nread;
         } else {
+            // 没遇到换行符，该字符加到ptr后面，更新读取数量。
             *ptr++ = c;
             *ptr = '\0';
             nread++;

@@ -34,12 +34,15 @@
 /* Check if this blocked client timedout (does nothing if the client is
  * not blocked right now). If so send a reply, unblock it, and return 1.
  * Otherwise 0 is returned and no operation is performed. */
+// 检查这个被阻塞的client是否超时（如果client不处于阻塞状态，什么都不做）。
+// 如果超时，则发送回复，解除阻塞，并返回1。否则返回0，不执行任何操作。
 int checkBlockedClientTimeout(client *c, mstime_t now) {
     if (c->flags & CLIENT_BLOCKED &&
         c->bpop.timeout != 0
         && c->bpop.timeout < now)
     {
         /* Handle blocking operation specific timeout. */
+        // timeout了，发送回复给阻塞的client，然后解除阻塞。
         replyToBlockedClientTimedOut(c);
         unblockClient(c);
         return 1;
@@ -52,9 +55,13 @@ int checkBlockedClientTimeout(client *c, mstime_t now) {
  * The function gets the current time in milliseconds as argument since
  * it gets called multiple times in a loop, so calling gettimeofday() for
  * each iteration would be costly without any actual gain. */
+// 检查client各种超时。如果client被释放则返回非0。
+// 因为本函数会迭代执行多次，每次调用gettimeofday()获取当前时间得不偿失，所以使用now_ms传入本轮执行clientsCron的时间，
 int clientsCronHandleTimeout(client *c, mstime_t now_ms) {
     time_t now = now_ms/1000;
 
+    // 如果有设置最大空闲时间，且已超时，则释放该空闲client连接。
+    // 注意这只真的普通clients连接，对于slaves、monitors、masters、BLOCKED以及Pub/Sub clients，我们不检测空闲时间超时。
     if (server.maxidletime &&
         /* This handles the idle clients connection timeout if set. */
         !(c->flags & CLIENT_SLAVE) &&   /* No timeout for slaves and monitors */
@@ -64,13 +71,17 @@ int clientsCronHandleTimeout(client *c, mstime_t now_ms) {
         (now - c->lastinteraction > server.maxidletime))
     {
         serverLog(LL_VERBOSE,"Closing idle client");
+        // 释放client，返回1
         freeClient(c);
         return 1;
     } else if (c->flags & CLIENT_BLOCKED) {
         /* Cluster: handle unblock & redirect of clients blocked
          * into keys no longer served by this server. */
+        // 对于集群模式的CLIENT_BLOCKED，这里调用clusterRedirectBlockedClientIfNeeded，检测阻塞的key是否被迁移，从而决定是否要回复重定向。
+        // 之前这里有处理正常CLIENT_BLOCKED的clients超时的，后面移到beforeSleep中handleBlockedClientsTimeout()处理了。
         if (server.cluster_enabled) {
             if (clusterRedirectBlockedClientIfNeeded(c))
+                // 如果需要重定向，解除block，发送重定向回复。
                 unblockClient(c);
         }
     }
@@ -133,23 +144,33 @@ void removeClientFromTimeoutTable(client *c) {
 
 /* This function is called in beforeSleep() in order to unblock clients
  * that are waiting in blocking operations with a timeout set. */
+// 这个函数在beforeSleep()中调用，用于对超时的阻塞client解除阻塞。
 void handleBlockedClientsTimeout(void) {
+    // 超时表没有数据，直接返回
     if (raxSize(server.clients_timeout_table) == 0) return;
     uint64_t now = mstime();
     raxIterator ri;
+    // 初始化rax迭代器
     raxStart(&ri,server.clients_timeout_table);
+    // 定位到最小key
     raxSeek(&ri,"^",NULL,0);
 
+    // 迭代，取出迭代器指定的元素处理
     while(raxNext(&ri)) {
         uint64_t timeout;
         client *c;
+        // 对处理到的key解析出timeout时间
         decodeTimeoutKey(ri.key,&timeout,&c);
+        // 如果timeout>=now，说明表中最小的过期时间都大于当前时间，即所有的timeouts都在未来，所以我们什么都不需要处理，跳出返回。
         if (timeout >= now) break; /* All the timeouts are in the future. */
+        // 如果超时了，我们需要检查超时，发送回复，并从表中移除该元素。
         c->flags &= ~CLIENT_IN_TO_TABLE;
         checkBlockedClientTimeout(c,now);
         raxRemove(server.clients_timeout_table,ri.key,ri.key_len,NULL);
+        // 移除最小超时时间的元素后，我们还要定位到表中还剩的最小的超时时间元素，用于下一轮循环处理。
         raxSeek(&ri,"^",NULL,0);
     }
+    // 如果没有元素超时了，释放迭代器退出。
     raxStop(&ri);
 }
 

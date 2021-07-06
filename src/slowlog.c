@@ -120,13 +120,19 @@ void slowlogInit(void) {
 /* Push a new entry into the slow log.
  * This function will make sure to trim the slow log accordingly to the
  * configured max length. */
+// 构建一个新的entry加入slow log
+// 这个函数会trim slow log，确保与配置的最大长度一致。
 void slowlogPushEntryIfNeeded(client *c, robj **argv, int argc, long long duration) {
+    // 配置的加入slow log的耗时限制，小于0表示不记录slowlog
     if (server.slowlog_log_slower_than < 0) return; /* Slowlog disabled */
+    // 耗时>=日志记录限制，则应该加入记录
     if (duration >= server.slowlog_log_slower_than)
+        // 构建Entry，从head加入链表中
         listAddNodeHead(server.slowlog,
                         slowlogCreateEntry(c,argv,argc,duration));
 
     /* Remove old entries if needed. */
+    // 如果slow log链表长度超出了配置的最大长度，这里删除最后一个节点。即满了时，加一个新的就删一个最老的。
     while (listLength(server.slowlog) > server.slowlog_max_len)
         listDelNode(server.slowlog,listLast(server.slowlog));
 }

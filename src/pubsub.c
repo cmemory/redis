@@ -293,6 +293,7 @@ int pubsubPublishMessage(robj *channel, robj *message) {
     listIter li;
 
     /* Send to clients listening for that channel */
+    // 在pubsub_channels找出所有监听指定channel的clients，遍历该列表，挨个发送message过去。
     de = dictFind(server.pubsub_channels,channel);
     if (de) {
         list *list = dictGetVal(de);
@@ -307,6 +308,7 @@ int pubsubPublishMessage(robj *channel, robj *message) {
         }
     }
     /* Send to clients listening to matching channels */
+    // 遍历pubsub_patterns字典，对于每个pattern看是否能匹配指定channel，如果能匹配，则再遍历对应的clients列表，挨个发送message过去。
     di = dictGetIterator(server.pubsub_patterns);
     if (di) {
         channel = getDecodedObject(channel);
@@ -402,11 +404,15 @@ void punsubscribeCommand(client *c) {
 }
 
 /* PUBLISH <channel> <message> */
+// PUBLISH指令
 void publishCommand(client *c) {
+    // 消息发送给订阅的client
     int receivers = pubsubPublishMessage(c->argv[1],c->argv[2]);
     if (server.cluster_enabled)
+        // 如果是集群模式，传播给集群其他订阅该channel的节点。
         clusterPropagatePublish(c->argv[1],c->argv[2]);
     else
+        // 非集群模式，强制复制传播
         forceCommandPropagation(c,PROPAGATE_REPL);
     addReplyLongLong(c,receivers);
 }
